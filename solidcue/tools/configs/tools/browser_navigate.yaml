@@ -1,0 +1,37 @@
+tool_key: browser_navigate
+name: Browser Navigate
+description: Open a URL in a managed Playwright browser page and return page metadata.
+type: mcp
+enabled: true
+mcp:
+  server_key: playwright
+  tool_name: browser_navigate
+  input_schema:
+    properties:
+      url:
+        title: Url
+        type: string
+      browser:
+        default: chromium
+        title: Browser
+        type: string
+      headless:
+        default: true
+        title: Headless
+        type: boolean
+      wait_until:
+        default: load
+        title: Wait Until
+        type: string
+      timeout_ms:
+        default: 30000
+        title: Timeout Ms
+        type: integer
+    required:
+    - url
+    title: browser_navigateArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

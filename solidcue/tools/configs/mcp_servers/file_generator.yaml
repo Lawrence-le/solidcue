@@ -1,0 +1,16 @@
+server_key: file_generator
+name: File Generator
+description: 'File Generator MCP server exposing 3 tool(s): create_pdf_document; create_word_document;
+  create_csv_file'
+transport: streamable_http
+url: http://localhost:9003/mcp
+auth:
+  type: none
+  token_env: null
+  location: header
+  header_name: Authorization
+  prefix: Bearer
+  param_name: api_key
+  oauth_provider: null
+  scopes: []
+enabled: true

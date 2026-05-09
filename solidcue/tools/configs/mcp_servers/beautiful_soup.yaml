@@ -1,0 +1,15 @@
+server_key: beautiful_soup
+name: beautiful soup
+description: 'beautiful soup MCP server exposing 1 tool(s): scrape_webpage'
+transport: streamable_http
+url: http://localhost:9002/mcp
+auth:
+  type: none
+  token_env: null
+  location: header
+  header_name: Authorization
+  prefix: Bearer
+  param_name: api_key
+  oauth_provider: null
+  scopes: []
+enabled: true

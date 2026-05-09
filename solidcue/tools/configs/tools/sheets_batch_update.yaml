@@ -1,0 +1,29 @@
+tool_key: sheets_batch_update
+name: Sheets Batch Update
+description: Apply Google Sheets formatting and structural updates using batchUpdate
+  requests.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: sheets_batch_update
+  input_schema:
+    properties:
+      spreadsheet_id:
+        title: Spreadsheet Id
+        type: string
+      requests:
+        items:
+          additionalProperties: true
+          type: object
+        title: Requests
+        type: array
+    required:
+    - spreadsheet_id
+    - requests
+    title: sheets_batch_updateArguments
+    type: object
+api: null

@@ -1,0 +1,29 @@
+tool_key: drive_download_file
+name: Drive Download File
+description: Download a file by file_id. For Google-native files (Docs/Sheets/Slides),
+  optionally set export_mime_type (auto-selected for common types; required for unsupported
+  native types). Returns Base64 content plus output mimeType.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: drive_download_file
+  input_schema:
+    properties:
+      file_id:
+        title: File Id
+        type: string
+      export_mime_type:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: Export Mime Type
+    required:
+    - file_id
+    title: drive_download_fileArguments
+    type: object
+api: null

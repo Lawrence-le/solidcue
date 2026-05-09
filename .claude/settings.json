@@ -1,0 +1,18 @@
+{
+  "version": "0.1.0",
+  "description": "Claude Code settings for solidcue project",
+  "permissions": {
+    "bash": {
+      "allow": [
+        "uv run",
+        "uv sync",
+        "pytest",
+        "python",
+        "git"
+      ]
+    }
+  },
+  "env": {
+    "PYTHONPATH": "."
+  }
+}

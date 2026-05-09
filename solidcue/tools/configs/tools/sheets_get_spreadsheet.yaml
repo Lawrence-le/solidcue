@@ -1,0 +1,34 @@
+tool_key: sheets_get_spreadsheet
+name: Sheets Get Spreadsheet
+description: Retrieve spreadsheet metadata and optional grid data for safe sheet/range
+  operations.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: sheets_get_spreadsheet
+  input_schema:
+    properties:
+      spreadsheet_id:
+        title: Spreadsheet Id
+        type: string
+      ranges:
+        anyOf:
+        - items:
+            type: string
+          type: array
+        - type: 'null'
+        default: null
+        title: Ranges
+      include_grid_data:
+        default: false
+        title: Include Grid Data
+        type: boolean
+    required:
+    - spreadsheet_id
+    title: sheets_get_spreadsheetArguments
+    type: object
+api: null

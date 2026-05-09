@@ -1,0 +1,25 @@
+tool_key: drive_move_file_to_folder
+name: Drive Move File To Folder
+description: Move a Google Drive file into a target folder by updating parent references.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: drive_move_file_to_folder
+  input_schema:
+    properties:
+      file_id:
+        title: File Id
+        type: string
+      target_folder_id:
+        title: Target Folder Id
+        type: string
+    required:
+    - file_id
+    - target_folder_id
+    title: drive_move_file_to_folderArguments
+    type: object
+api: null

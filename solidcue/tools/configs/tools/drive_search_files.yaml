@@ -1,0 +1,41 @@
+tool_key: drive_search_files
+name: Drive Search Files
+description: Search Google Drive files and return normalized metadata. Provide file_id
+  for exact lookup; optional query adds extra Drive q filters.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: drive_search_files
+  input_schema:
+    properties:
+      query:
+        default: ''
+        title: Query
+        type: string
+      page_size:
+        default: 25
+        title: Page Size
+        type: integer
+      page_token:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: Page Token
+      spaces:
+        default: drive
+        title: Spaces
+        type: string
+      file_id:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: File Id
+    title: drive_search_filesArguments
+    type: object
+api: null

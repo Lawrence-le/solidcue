@@ -1,0 +1,27 @@
+tool_key: docs_create_document
+name: Docs Create Document
+description: Create a Google Doc and optionally seed it with text.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: docs_create_document
+  input_schema:
+    properties:
+      title:
+        title: Title
+        type: string
+      content:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: Content
+    required:
+    - title
+    title: docs_create_documentArguments
+    type: object
+api: null

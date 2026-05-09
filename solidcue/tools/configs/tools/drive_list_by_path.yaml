@@ -1,0 +1,42 @@
+tool_key: drive_list_by_path
+name: Drive List By Path
+description: List files in a human-readable Drive folder path, e.g. /resume/source.
+  Set include_subfolders=true to include nested descendants.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: drive_list_by_path
+  input_schema:
+    properties:
+      path:
+        title: Path
+        type: string
+      page_size:
+        default: 25
+        title: Page Size
+        type: integer
+      page_token:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: Page Token
+      include_subfolders:
+        default: false
+        title: Include Subfolders
+        type: boolean
+      max_depth:
+        anyOf:
+        - type: integer
+        - type: 'null'
+        default: null
+        title: Max Depth
+    required:
+    - path
+    title: drive_list_by_pathArguments
+    type: object
+api: null

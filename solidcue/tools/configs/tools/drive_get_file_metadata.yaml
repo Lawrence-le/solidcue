@@ -1,0 +1,21 @@
+tool_key: drive_get_file_metadata
+name: Drive Get File Metadata
+description: Get metadata for a single Google Drive file by id.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: drive_get_file_metadata
+  input_schema:
+    properties:
+      file_id:
+        title: File Id
+        type: string
+    required:
+    - file_id
+    title: drive_get_file_metadataArguments
+    type: object
+api: null

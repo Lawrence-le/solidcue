@@ -1,0 +1,29 @@
+tool_key: create_word_document
+name: Create Word Document
+description: Generate a Word document from text content and a title.
+type: mcp
+enabled: true
+approval_mode: always
+approval_risk: medium
+approval_prompt: null
+mcp:
+  server_key: file_generator
+  tool_name: create_word_document
+  input_schema:
+    properties:
+      content:
+        title: Content
+        type: string
+      title:
+        title: Title
+        type: string
+      user_id:
+        default: default_user
+        title: User Id
+        type: string
+    required:
+    - content
+    - title
+    title: create_word_documentArguments
+    type: object
+api: null

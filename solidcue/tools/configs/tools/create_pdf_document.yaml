@@ -1,0 +1,29 @@
+tool_key: create_pdf_document
+name: Create PDF Document
+description: Generate a PDF document from text content and a title.
+type: mcp
+enabled: true
+approval_mode: always
+approval_risk: medium
+approval_prompt: null
+mcp:
+  server_key: file_generator
+  tool_name: create_pdf_document
+  input_schema:
+    properties:
+      content:
+        title: Content
+        type: string
+      title:
+        title: Title
+        type: string
+      user_id:
+        default: default_user
+        title: User Id
+        type: string
+    required:
+    - content
+    - title
+    title: create_pdf_documentArguments
+    type: object
+api: null

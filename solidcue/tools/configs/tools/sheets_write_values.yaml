@@ -1,0 +1,34 @@
+tool_key: sheets_write_values
+name: Sheets Write Values
+description: Write a 2D values array to a spreadsheet range in A1 notation.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: sheets_write_values
+  input_schema:
+    properties:
+      spreadsheet_id:
+        title: Spreadsheet Id
+        type: string
+      range_name:
+        title: Range Name
+        type: string
+      values:
+        items: {}
+        title: Values
+        type: array
+      value_input_option:
+        default: RAW
+        title: Value Input Option
+        type: string
+    required:
+    - spreadsheet_id
+    - range_name
+    - values
+    title: sheets_write_valuesArguments
+    type: object
+api: null

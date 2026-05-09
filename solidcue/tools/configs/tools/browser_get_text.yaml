@@ -1,0 +1,27 @@
+tool_key: browser_get_text
+name: Browser Get Text
+description: Return visible text from the current Playwright page or from a selected
+  element.
+type: mcp
+enabled: true
+mcp:
+  server_key: playwright
+  tool_name: browser_get_text
+  input_schema:
+    properties:
+      selector:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: Selector
+      timeout_ms:
+        default: 30000
+        title: Timeout Ms
+        type: integer
+    title: browser_get_textArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

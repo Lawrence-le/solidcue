@@ -1,0 +1,16 @@
+server_key: playwright
+name: playwright
+description: 'playwright MCP server exposing 7 tool(s): browser_navigate, browser_click,
+  browser_type, browser_get_text, browser_screenshot, browser_status, browser_close'
+transport: streamable_http
+url: http://localhost:9005/mcp
+auth:
+  type: none
+  token_env: null
+  location: header
+  header_name: Authorization
+  prefix: Bearer
+  param_name: api_key
+  oauth_provider: null
+  scopes: []
+enabled: true

@@ -1,0 +1,46 @@
+tool_key: sheets_create_job_tracker
+name: Sheets Create Job Tracker
+description: Create a formatted job application tracker in Google Sheets with dropdowns,
+  filters, and optional Drive folder placement.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: sheets_create_job_tracker
+  input_schema:
+    properties:
+      title:
+        title: Title
+        type: string
+      columns:
+        items:
+          type: string
+        title: Columns
+        type: array
+      application_status_options:
+        items:
+          type: string
+        title: Application Status Options
+        type: array
+      interview_stage_options:
+        items:
+          type: string
+        title: Interview Stage Options
+        type: array
+      folder_path:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: Folder Path
+    required:
+    - title
+    - columns
+    - application_status_options
+    - interview_stage_options
+    title: sheets_create_job_trackerArguments
+    type: object
+api: null

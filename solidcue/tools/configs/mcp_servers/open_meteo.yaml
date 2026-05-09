@@ -1,0 +1,15 @@
+server_key: open_meteo
+name: Open Meteo
+description: 'Open Meteo MCP server exposing 1 tool(s): get_weather_forecast'
+transport: streamable_http
+url: http://localhost:9001/mcp
+auth:
+  type: none
+  token_env: null
+  location: header
+  header_name: Authorization
+  prefix: Bearer
+  param_name: api_key
+  oauth_provider: null
+  scopes: []
+enabled: true

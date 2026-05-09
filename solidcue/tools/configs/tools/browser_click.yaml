@@ -1,0 +1,26 @@
+tool_key: browser_click
+name: Browser Click
+description: Click an element on the current Playwright page using a CSS selector
+  or text selector.
+type: mcp
+enabled: true
+mcp:
+  server_key: playwright
+  tool_name: browser_click
+  input_schema:
+    properties:
+      selector:
+        title: Selector
+        type: string
+      timeout_ms:
+        default: 30000
+        title: Timeout Ms
+        type: integer
+    required:
+    - selector
+    title: browser_clickArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

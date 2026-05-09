@@ -1,0 +1,23 @@
+tool_key: scrape_webpage
+name: Scrape Webpage
+description: Scrape a known webpage URL via the BeautifulSoup backend and return static
+  parsed content. Some JavaScript-rendered pages may only return titles, headings,
+  or links.
+type: mcp
+enabled: true
+mcp:
+  server_key: beautiful_soup
+  tool_name: scrape_webpage
+  input_schema:
+    properties:
+      url:
+        title: Url
+        type: string
+    required:
+    - url
+    title: scrape_webpageArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

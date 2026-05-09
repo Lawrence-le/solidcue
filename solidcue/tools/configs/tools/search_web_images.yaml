@@ -1,0 +1,33 @@
+tool_key: search_web_images
+name: Search Web Images
+description: Search Google Images through Serper and return normalized image metadata.
+type: mcp
+enabled: true
+mcp:
+  server_key: serper
+  tool_name: search_web_images
+  input_schema:
+    properties:
+      query:
+        title: Query
+        type: string
+      num_results:
+        default: 5
+        title: Num Results
+        type: integer
+      country:
+        default: us
+        title: Country
+        type: string
+      language:
+        default: en
+        title: Language
+        type: string
+    required:
+    - query
+    title: search_web_imagesArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

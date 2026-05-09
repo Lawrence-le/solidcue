@@ -1,0 +1,38 @@
+[project]
+name = "solidcue"
+version = "0.1.0"
+description = "Config-driven multi-agent orchestration system with CLI-based agent creation"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    "arize-phoenix>=15.4.0",
+    "httpx>=0.28.1",
+    "inquirerpy>=0.3.4",
+    "langchain>=1.2.15",
+    "langgraph>=1.1.10",
+    "langgraph-checkpoint-sqlite>=3.0.0",
+    "mcp>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.37.0",
+    "opentelemetry-sdk>=1.37.0",
+    "pydantic>=2.13.3",
+    "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "typer>=0.25.0",
+]
+
+[project.scripts]
+cli = "solidcue.app.cli:app"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

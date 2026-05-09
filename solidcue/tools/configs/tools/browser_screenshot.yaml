@@ -1,0 +1,31 @@
+tool_key: browser_screenshot
+name: Browser Screenshot
+description: Save a PNG or JPEG screenshot of the current Playwright page and return
+  its absolute path.
+type: mcp
+enabled: true
+mcp:
+  server_key: playwright
+  tool_name: browser_screenshot
+  input_schema:
+    properties:
+      path:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: Path
+      full_page:
+        default: true
+        title: Full Page
+        type: boolean
+      timeout_ms:
+        default: 30000
+        title: Timeout Ms
+        type: integer
+    title: browser_screenshotArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

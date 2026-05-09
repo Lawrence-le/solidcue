@@ -1,0 +1,18 @@
+server_key: google_drive
+name: google drive
+description: 'google drive MCP server exposing 11 tool(s): google_auth_status, google_auth_clear,
+  drive_search_files, drive_list_by_path, drive_get_file_metadata, drive_download_file,
+  drive_upload_file, docs_create_document, docs_append_text, sheets_create_spreadsheet,
+  sheets_write_values'
+transport: streamable_http
+url: http://localhost:9006/mcp
+auth:
+  type: none
+  token_env: null
+  location: header
+  header_name: Authorization
+  prefix: Bearer
+  param_name: api_key
+  oauth_provider: null
+  scopes: []
+enabled: true

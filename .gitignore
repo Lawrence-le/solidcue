@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv
+.env
+.env.local
+.env.*
+.provider
+
+# Local CLI wrapper
+bin/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude Code worktrees (transient)
+.claude/worktrees/
+
+# SolidCue local checkpoint sqlite (if generated in project dir)
+.solidcue/

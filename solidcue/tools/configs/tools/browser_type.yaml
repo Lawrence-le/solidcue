@@ -1,0 +1,37 @@
+tool_key: browser_type
+name: Browser Type
+description: Type text into an element on the current Playwright page.
+type: mcp
+enabled: true
+mcp:
+  server_key: playwright
+  tool_name: browser_type
+  input_schema:
+    properties:
+      selector:
+        title: Selector
+        type: string
+      text:
+        title: Text
+        type: string
+      clear:
+        default: false
+        title: Clear
+        type: boolean
+      submit:
+        default: false
+        title: Submit
+        type: boolean
+      timeout_ms:
+        default: 30000
+        title: Timeout Ms
+        type: integer
+    required:
+    - selector
+    - text
+    title: browser_typeArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

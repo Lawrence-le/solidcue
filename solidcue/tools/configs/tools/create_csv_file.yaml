@@ -1,0 +1,30 @@
+tool_key: create_csv_file
+name: Create CSV File
+description: Generate a CSV file from CSV-formatted text content with a title-based
+  filename.
+type: mcp
+enabled: true
+approval_mode: always
+approval_risk: medium
+approval_prompt: null
+mcp:
+  server_key: file_generator
+  tool_name: create_csv_file
+  input_schema:
+    properties:
+      content:
+        title: Content
+        type: string
+      title:
+        title: Title
+        type: string
+      user_id:
+        default: default_user
+        title: User Id
+        type: string
+    required:
+    - content
+    - title
+    title: create_csv_fileArguments
+    type: object
+api: null

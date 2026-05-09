@@ -1,0 +1,25 @@
+tool_key: docs_append_text
+name: Docs Append Text
+description: Append text to the end of an existing Google Doc.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: docs_append_text
+  input_schema:
+    properties:
+      document_id:
+        title: Document Id
+        type: string
+      text:
+        title: Text
+        type: string
+    required:
+    - document_id
+    - text
+    title: docs_append_textArguments
+    type: object
+api: null

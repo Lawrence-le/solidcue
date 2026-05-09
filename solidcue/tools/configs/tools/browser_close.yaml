@@ -1,0 +1,16 @@
+tool_key: browser_close
+name: Browser Close
+description: Close the managed Playwright browser and release browser resources.
+type: mcp
+enabled: true
+mcp:
+  server_key: playwright
+  tool_name: browser_close
+  input_schema:
+    properties: {}
+    title: browser_closeArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

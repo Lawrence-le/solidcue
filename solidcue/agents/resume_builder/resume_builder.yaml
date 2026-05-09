@@ -1,0 +1,46 @@
+agent_id: b905caa2-8e05-47d3-b30a-9073cb0ab207
+agent_key: resume_builder
+name: Resume Builder
+description: Build resume that is industry standard and ATS compatible.
+provider:
+  type: openai_compatible
+  base_url: http://localhost:11434/v1
+  api_key_env: RESUME_BUILDER_DECISION_API_KEY
+  model: gemma4:latest
+sufficiency_provider:
+  type: openai_compatible
+  base_url: http://localhost:11434/v1
+  api_key_env: RESUME_BUILDER_SUFFICIENCY_API_KEY
+  model: gemma4:latest
+validator_provider:
+  type: openai_compatible
+  base_url: http://localhost:11434/v1
+  api_key_env: RESUME_BUILDER_VALIDATOR_API_KEY
+  model: gemma4:latest
+tools:
+  - google_auth_status
+  - google_auth_clear
+  - drive_search_files
+  - drive_list_by_path
+  - drive_download_file
+  - docs_create_document
+  - docs_append_text
+  - sheets_create_spreadsheet
+  - sheets_write_values
+  - sheets_batch_update
+  - sheets_get_spreadsheet
+  - sheets_create_job_tracker
+  - browser_screenshot
+  - browser_click
+  - browser_close
+  - search_web_images
+  - browser_type
+  - browser_get_text
+  - browser_status
+  - search_web
+  - browser_navigate
+
+allowed_tasks: []
+style: {}
+constraints: {}
+validation_policy: null

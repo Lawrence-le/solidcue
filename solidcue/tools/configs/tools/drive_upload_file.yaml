@@ -1,0 +1,35 @@
+tool_key: drive_upload_file
+name: Drive Upload File
+description: Upload a file to Google Drive using Base64-encoded content.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: drive_upload_file
+  input_schema:
+    properties:
+      name:
+        title: Name
+        type: string
+      content_base64:
+        title: Content Base64
+        type: string
+      mime_type:
+        default: application/octet-stream
+        title: Mime Type
+        type: string
+      parent_id:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: Parent Id
+    required:
+    - name
+    - content_base64
+    title: drive_upload_fileArguments
+    type: object
+api: null

@@ -1,0 +1,34 @@
+tool_key: search_web
+name: Search Web
+description: Search Google through Serper and return normalized organic and answer-box
+  results.
+type: mcp
+enabled: true
+mcp:
+  server_key: serper
+  tool_name: search_web
+  input_schema:
+    properties:
+      query:
+        title: Query
+        type: string
+      num_results:
+        default: 10
+        title: Num Results
+        type: integer
+      country:
+        default: us
+        title: Country
+        type: string
+      language:
+        default: en
+        title: Language
+        type: string
+    required:
+    - query
+    title: search_webArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

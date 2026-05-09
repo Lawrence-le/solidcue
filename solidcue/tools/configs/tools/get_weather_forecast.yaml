@@ -1,0 +1,29 @@
+tool_key: get_weather_forecast
+name: Get Weather Forecast
+description: Get current weather and future forecasts for a specific location.
+type: mcp
+enabled: true
+mcp:
+  server_key: open_meteo
+  tool_name: get_weather_forecast
+  input_schema:
+    properties:
+      lat:
+        title: Lat
+        type: number
+      lon:
+        title: Lon
+        type: number
+      timestamp:
+        default: null
+        title: Timestamp
+        type: string
+    required:
+    - lat
+    - lon
+    title: get_weather_forecastArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null

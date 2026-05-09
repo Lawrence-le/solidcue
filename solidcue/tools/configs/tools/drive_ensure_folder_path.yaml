@@ -1,0 +1,26 @@
+tool_key: drive_ensure_folder_path
+name: Drive Ensure Folder Path
+description: Resolve or create a nested Google Drive folder path and return the final
+  folder id.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: drive_ensure_folder_path
+  input_schema:
+    properties:
+      path:
+        title: Path
+        type: string
+      create_if_missing:
+        default: true
+        title: Create If Missing
+        type: boolean
+    required:
+    - path
+    title: drive_ensure_folder_pathArguments
+    type: object
+api: null

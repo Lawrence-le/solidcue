@@ -1,0 +1,15 @@
+server_key: serper
+name: serper
+description: 'serper MCP server exposing 2 tool(s): search_web, search_web_images'
+transport: streamable_http
+url: http://localhost:9004/mcp
+auth:
+  type: api_key
+  token_env: SERPER_API_KEY
+  location: header
+  header_name: Authorization
+  prefix: Bearer
+  param_name: api_key
+  oauth_provider: null
+  scopes: []
+enabled: true

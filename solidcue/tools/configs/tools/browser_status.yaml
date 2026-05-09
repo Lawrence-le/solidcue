@@ -1,0 +1,17 @@
+tool_key: browser_status
+name: Browser Status
+description: Return the current managed browser state, including browser engine, URL,
+  and title when available.
+type: mcp
+enabled: true
+mcp:
+  server_key: playwright
+  tool_name: browser_status
+  input_schema:
+    properties: {}
+    title: browser_statusArguments
+    type: object
+api: null
+approval_mode: never
+approval_risk: low
+approval_prompt: null
