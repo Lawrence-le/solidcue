@@ -1,10 +1,13 @@
 
 from typing import Any
 
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from solidcue.tools.schema import MCPServerConfig
+
+_TOOL_CALL_TIMEOUT = httpx.Timeout(timeout=120.0)
 
 
 class MCPClient:
@@ -83,10 +86,11 @@ class MCPClient:
         Execute a tool exposed by the MCP server.
         """
         try:
-            async with streamable_http_client(self.server.url) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    result = await session.call_tool(tool_name, arguments)
+            async with httpx.AsyncClient(timeout=_TOOL_CALL_TIMEOUT) as http_client:
+                async with streamable_http_client(self.server.url, http_client=http_client) as (read, write, _):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.call_tool(tool_name, arguments)
         except Exception as exc:
             raise RuntimeError(
                 f"Unable to reach MCP server '{self.server.server_key}' at {self.server.url}: {exc}"

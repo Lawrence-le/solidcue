@@ -2,7 +2,11 @@ import json
 import re
 from typing import Any
 
+from solidcue.agents.configs.loader import load_agent
+from solidcue.core.execution.provider_resolver import get_provider_for_role
 from solidcue.core.state.schema import AgentState
+from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
+from solidcue.prompts.final_output_prompt import build_final_output_messages
 
 
 _SENSITIVE_QUERY_PARAM_RE = re.compile(r"([?&](?:api_key|key|token|access_token)=)[^&\s]+", re.IGNORECASE)
@@ -71,16 +75,57 @@ def _build_fallback_output(state: AgentState) -> str:
     return "I couldn't generate a final response for this request."
 
 
+def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict[str, Any]]:
+    agent_key = state.get("agent_key")
+    if not isinstance(agent_key, str) or not agent_key:
+        return None, {}
+
+    execution_result = state.get("execution_result")
+    if not isinstance(execution_result, dict):
+        return None, {}
+
+    last_tool_call = state.get("active_tool_call")
+    if not isinstance(last_tool_call, dict):
+        decision = state.get("decision")
+        last_tool_call = decision if isinstance(decision, dict) else {}
+
+    payload = {
+        "user_input": str(state.get("user_input") or ""),
+        "tool_name": last_tool_call.get("tool_name"),
+        "tool_input": last_tool_call.get("tool_input") if isinstance(last_tool_call.get("tool_input"), dict) else {},
+        "execution_result": execution_result,
+    }
+
+    try:
+        agent = load_agent(agent_key)
+        provider = get_provider_for_role(agent, "lite")
+        messages = build_final_output_messages(payload)
+        output, metric_final_output = timed_generate(provider, messages)
+        if isinstance(output, str) and output.strip():
+            return output.strip(), metric_final_output
+    except Exception:
+        return None, {}
+    return None, {}
+
+
 def final_output_node(state: AgentState) -> dict[str, Any]:
+    """
+    Terminal node. Reads synthesis_draft (normal path) or falls back to
+    fallback logic. Writes only final_response.
+    """
+    if state.get("phase") == "conversational":
+        return {
+            "final_response": state.get("final_response") or _build_fallback_output(state),
+        }
+
+    llm_output, metric_final_output = _llm_compose_user_facing_output(state)
     final_output = (
-        state.get("final_response")
+        llm_output
         or state.get("synthesis_draft")
-        or state.get("draft_output")
         or _build_fallback_output(state)
     )
 
     return {
-        "final_output": final_output,
         "final_response": final_output,
-        "workflow_status": "completed",
+        **build_metric_state_delta("final_output", "metric_final_output", metric_final_output),
     }

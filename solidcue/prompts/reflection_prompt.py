@@ -1,4 +1,5 @@
-import json
+from __future__ import annotations
+
 from typing import Any
 
 from solidcue.prompts.reflection_system_prompt import build_reflection_system_prompt
@@ -6,23 +7,20 @@ from solidcue.prompts.reflection_system_prompt import build_reflection_system_pr
 
 def build_reflection_messages(
     *,
-    user_query: str,
-    execution_result: dict[str, Any] | None,
-    retry_reason: str | None,
-    tool_stage: str | None = None,
+    tool_name: str,
+    requires: list[str],
+    execution_result: Any,
 ) -> list[dict[str, str]]:
-    execution_json = json.dumps(execution_result or {}, ensure_ascii=True, default=str)
-
     system_prompt = build_reflection_system_prompt()
-
-    user_content = (
-        f"User query:\n{user_query}\n\n"
-        f"Current tool stage:\n{tool_stage or 'unknown'}\n\n"
-        f"Latest tool execution result JSON:\n{execution_json}\n\n"
-        f"Retry reason (if any):\n{retry_reason or 'None'}"
+    requires_text = ", ".join(f'"{r}"' for r in requires if isinstance(r, str) and r.strip())
+    runtime_context = (
+        f"TOOL_NAME: {tool_name or 'unknown'}\n"
+        f"REQUIREMENTS: {requires_text}\n\n"
+        "EXECUTION_RESULT:\n"
+        f"{execution_result}"
     )
-
     return [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_content},
+        {"role": "user", "content": runtime_context},
     ]
+

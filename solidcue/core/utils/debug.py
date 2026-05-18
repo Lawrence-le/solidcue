@@ -3,37 +3,12 @@ import re
 from typing import Any, Mapping
 
 from rich.console import Console, Group
-from rich.panel import Panel
 from rich.text import Text
+from rich.panel import Panel
 
 console = Console()
 CLI_DEBUG_HEADER_STYLE = "bold cyan"
 WORKFLOW_DEBUG_HEADER_STYLE = "bold magenta"
-
-NODE_KEYS = {
-    "decision_node": [
-        "metadata",
-        "phase",
-        "source_manifest",
-        "decision",
-        "active_tool_call",
-        "artifact_plan",
-    ],
-    "execution_node": [
-        "messages",
-        "execution_result",
-        "context_evidence",
-        "source_manifest",
-        "source_evidence",
-    ],
-    "router_node": ["phase", "failure_type", "router_next"],
-    "artifact_generation_node": ["artifact_input", "artifact_generation_messages"],
-    "artifact_execution_node": ["artifact_result"],
-    "post_execution_reflection_node": ["reflection_result", "tool_turn_count", "tool_call_history"],
-    "validation_node": ["validation_result", "failure_type", "validation_report"],
-    "synthesis_node": ["synthesis_draft"],
-    "final_output_node": ["final_output", "final_response"],
-}
 
 NODE_STATE_KEY_STYLE = "green"
 
@@ -56,13 +31,16 @@ def sanitize_debug_text(text: str) -> str:
     return _SENSITIVE_JSON_FIELD_RE.sub(r"\1[redacted]\3", text)
 
 
-def truncate_debug_text(text: str, max_len: int = 4000) -> str:
+def truncate_debug_text(text: str, max_len: int = 1000) -> str:
     if len(text) <= max_len:
         return text
 
     omitted = len(text) - max_len
     return f"{text[:max_len]}\n... [truncated {omitted} chars]"
 
+# def truncate_debug_text(text: str, max_len: int = 4000) -> str:
+#     # Temporary: disable truncation so full debug payload is visible.
+#     return text
 
 def _parse_json_string(value: str) -> Any:
     stripped = value.strip()
@@ -126,83 +104,76 @@ def print_debug_value(label: str, value: Any, max_len: int = 4000) -> None:
     console.print(f"[bold bright_white]{label}[/bold bright_white]: {formatted}")
 
 
-def _message_title(index: int, message: Mapping[str, Any]) -> str:
-    role = str(message.get("role", "unknown"))
-    tool_calls = message.get("tool_calls")
-
-    if isinstance(tool_calls, list) and tool_calls:
-        first_call = tool_calls[0] if isinstance(tool_calls[0], dict) else {}
-        function_info = first_call.get("function") if isinstance(first_call, dict) else {}
-        function_name = function_info.get("name") if isinstance(function_info, dict) else None
-        if function_name:
-            return f"{index}. {role} -> tool_call:{function_name}"
-
-    if role == "tool":
-        tool_call_id = message.get("tool_call_id", "unknown")
-        return f"{index}. tool result:{tool_call_id}"
-
-    return f"{index}. {role}"
+_VERBOSE_STATE_KEYS = {"context_evidence"}
+_UNTRUNCATED_STATE_KEYS = {"tool_call_history"}
+_TRUNCATED_TEXT_KEYS = {"text"}
 
 
-def _message_body(message: Mapping[str, Any], max_len: int) -> str:
-    tool_calls = message.get("tool_calls")
-    if isinstance(tool_calls, list) and tool_calls:
-        return format_debug_value(tool_calls, max_len=max_len)
+def _truncate_text_content_fields(value: Any, *, max_len: int = 100) -> Any:
+    if isinstance(value, list):
+        return [_truncate_text_content_fields(item, max_len=max_len) for item in value]
 
-    content = message.get("content")
-    if message.get("role") == "tool":
-        return format_debug_value(content, max_len=max_len)
+    if isinstance(value, dict):
+        truncated: dict[Any, Any] = {}
+        for key, item in value.items():
+            key_lower = key.lower() if isinstance(key, str) else ""
+            should_truncate = key_lower in _TRUNCATED_TEXT_KEYS or "content" in key_lower
+            if should_truncate and isinstance(item, str):
+                truncated[key] = preview(item, max_len=max_len)
+            else:
+                truncated[key] = _truncate_text_content_fields(item, max_len=max_len)
+        return truncated
 
-    return format_debug_value("" if content is None else str(content), max_len=max_len)
-
-
-def print_debug_messages(
-    title: str,
-    messages: Any,
-    *,
-    max_content_len: int = 4000,
-    header_style: str = CLI_DEBUG_HEADER_STYLE,
-    description: str | None = None,
-) -> None:
-    print_debug_header(title, style=header_style)
-    if description:
-        console.print(f"[dim]{description}[/dim]")
-
-    if not isinstance(messages, list) or not messages:
-        console.print("[dim]None[/dim]")
-        return
-
-    for idx, message in enumerate(messages, start=1):
-        if not isinstance(message, Mapping):
-            console.print(Panel(Text(format_debug_value(message, max_len=max_content_len)), title=str(idx)))
-            continue
-
-        body = _message_body(message, max_len=max_content_len)
-        console.print(
-            Panel(
-                Text(body),
-                title=_message_title(idx, message),
-                title_align="left",
-                border_style="dim",
-            )
-        )
+    return value
 
 
 def _format_node_state_line(key: str, value: Any) -> Text:
     line = Text()
     line.append(key, style=NODE_STATE_KEY_STYLE)
     line.append(": ")
-    line.append(format_debug_value(preview(value), max_len=1200))
+    if key in _UNTRUNCATED_STATE_KEYS:
+        if key == "tool_call_history":
+            value = _truncate_text_content_fields(value, max_len=100)
+        line.append(format_debug_value(value, max_len=999999))
+        return line
+
+    if key in _VERBOSE_STATE_KEYS:
+        # Show last 1000 chars of the serialized value so content is visible
+        serialized = format_debug_value(value, max_len=999999)
+        snippet = serialized[-1000:] if len(serialized) > 1000 else serialized
+        line.append(snippet)
+    else:
+        line.append(format_debug_value(preview(value), max_len=1200))
     return line
 
 
 def log_state(node_name: str, state: Mapping[str, Any]) -> None:
-    keys = NODE_KEYS.get(node_name, state.keys())
     rendered_values = []
 
-    for k in keys:
-        if k in state:
-            rendered_values.append(_format_node_state_line(k, state[k]))
+    for k in state.keys():
+        if k == "metric_usage_events":
+            continue
+        if node_name == "decision" and k == "llm_prompt_messages":
+            continue
+        if node_name == "router" and k == "task_plan":
+            continue
+        if node_name == "execution" and k == "tool_call_history":
+            continue
+        if node_name == "router" and k == "retry_reason":
+            line = Text()
+            line.append(k, style=NODE_STATE_KEY_STYLE)
+            line.append(": ")
+            line.append(format_debug_value(state[k], max_len=999999))
+            rendered_values.append(line)
+            continue
+        if node_name == "planning" and k == "task_plan":
+            line = Text()
+            line.append(k, style=NODE_STATE_KEY_STYLE)
+            line.append(": ")
+            line.append(format_debug_value(state[k], max_len=999999))
+            rendered_values.append(line)
+            continue
+        rendered_values.append(_format_node_state_line(k, state[k]))
 
     body = Group(*rendered_values) if rendered_values else Text("No selected state fields.", style="dim")
     console.print(

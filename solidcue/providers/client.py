@@ -6,7 +6,7 @@ import httpx
 class HTTPClient:
     def __init__(
         self,
-        timeout: int = 30,
+        timeout: int = 120,
         max_retries: int = 3,
         initial_retry_delay_seconds: float = 1.0,
         max_retry_delay_seconds: float = 8.0,

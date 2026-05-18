@@ -25,8 +25,24 @@ bin/
 .DS_Store
 Thumbs.db
 
-# Claude Code worktrees (transient)
-.claude/worktrees/
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Provider secrets
+.provider.md
 
 # SolidCue local checkpoint sqlite (if generated in project dir)
 .solidcue/
+
+# Local model weights
+solidcue/models/
+
+# Agent configs (domain-specific, not shared)
+solidcue/agents/
+
+# Tool configs
+solidcue/tools/
+
+# User profile configs
+solidcue/user/

@@ -1,0 +1,16 @@
+tool_key: browser_get_html
+name: Browser Get HTML
+description: Return the current page HTML content from the managed Playwright page.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: playwright
+  tool_name: browser_get_html
+  input_schema:
+    properties: {}
+    title: browser_get_htmlArguments
+    type: object
+api: null

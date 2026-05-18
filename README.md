@@ -12,52 +12,155 @@
 ![Rich](https://img.shields.io/badge/Terminal-Rich-6C63FF)
 ![Pydantic](https://img.shields.io/badge/Validation-Pydantic-E92063)
 ![YAML](https://img.shields.io/badge/Config-YAML-CB171E?logo=yaml&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-anthropic%20%2F%20openai%20%2F%20openrouter-111827)
+![DB](https://img.shields.io/badge/DB-SQLite-003B57?logo=sqlite&logoColor=white)
 
 SolidCue is a Python CLI for building and running config-driven AI agents with
-LangGraph. It uses YAML configuration to define agents, tools, MCP servers,
-provider settings, and user context, then executes a multi-step workflow from
-the terminal. Arize Phoenix tracing is supported for observability.
+LangGraph. Agents are defined entirely through YAML, covering persona, tools,
+MCP servers, provider settings, constraints, and user context, with no
+orchestration code required per use case.
+
+The runtime executes a multi-stage graph that classifies the request, discovers
+relevant tools, plans an approach, decides on actions, executes tool calls,
+reflects on results, validates output quality, and synthesizes a final response,
+with routing logic that loops back through stages when gaps are detected.
+
+Observability is supported through Arize Phoenix and LangSmith tracing,
+individually or together.
 
 ## Keywords
 
-AI agents, agent orchestration, LangGraph, Arize Phoenix, Model Context Protocol,
-MCP, AI CLI, LLM tools, OpenAI-compatible API, Anthropic Claude, OpenRouter,
-YAML agent configuration, Python agent framework.
+AI agents, agent orchestration, LangGraph, Arize Phoenix, LangSmith,
+Model Context Protocol, MCP, AI CLI, LLM tools, OpenAI-compatible API,
+Anthropic Claude, OpenRouter, YAML agent configuration, Python agent framework.
 
 ## Why SolidCue
 
 - Build agents without hardcoding orchestration logic per use case
 - Keep agent behavior inspectable through YAML and deterministic workflow stages
 - Connect external tools through MCP or direct API tool configuration
-- Trace full LangGraph runs in Arize Phoenix when debugging or evaluating behavior
+- Define agent role and tone through PERSONA.md
+- Define domain expertise and task knowledge through SKILL.md
+- Define tool usage guidance and preferences through TOOLS.md
+- Trace full LangGraph runs in Arize Phoenix or LangSmith when debugging or evaluating behavior
 
 ## Architecture Overview
 
-SolidCue runs a LangGraph-based workflow with explicit stages:
+SolidCue orchestrates agent workflows through a LangGraph state graph composed of the following nodes and edges:
 
-1. Decision: decide whether to answer directly or call tools
-2. Execution: invoke selected tools (MCP/API/RAG placeholder)
-3. Reflection: analyze tool results and identify gaps
-4. Validation: check response quality and completeness
-5. Synthesis: assemble final response
-6. Final Output: return the response to the CLI
+![SolidCue Agent Architecture](assets/solidcue-agent-architecture.png)
 
-This structure keeps orchestration explicit, testable, and maintainable.
+### Workflow Stages (Nodes)
+
+1. **Initialize**: load agent config, persona, skill, tools guidance, and user context. Resolve timezone, set retry limits, and prepare baseline state.
+2. **Classify**: use a lightweight LLM to determine user intent (greeting, off-topic, conversational, or task). Simple intents are routed directly to output, skipping the full pipeline.
+3. **Discover**: extract source and output file paths from SKILL.md and TOOLS.md using LLM-based introspection, so downstream nodes know what files the agent works with.
+4. **Plan**: decompose the user request into a structured task plan that drives all downstream nodes. Each task is typed (source gathering, artifact generation, synthesis, or review), carries normalized requirement keys and an evidence role (grounding, alignment, or context). Each task phase is enforced to maintain consistent task shape and act as guardrail to avoid vague requirements.
+5. **Decide**: for each task, use the LLM to choose an action: call a specific tool (with validated arguments) or respond directly. Decisions are validated against the agent's allowed tool set.
+6. **Execute**: invoke the selected tool via MCP, fill missing arguments from prior task outputs, normalize results, and record success or failure in tool call history.
+7. **Reflect**: validate tool output against task requirements. If the planned tool succeeded, requirements are marked met deterministically. Otherwise, an LLM checks whether the output semantically satisfies each requirement.
+8. **Route**: the central dispatcher for phase transitions and retries. Checks task completion via accomplishments, advances the task plan when tasks complete, builds retry context when they fail, and enforces retry limits.
+9. **Synthesize**: collect evidence from completed tasks, deduplicate and clean it, then use a writer-role LLM to produce a polished response grounded in the gathered material.
+10. **Validate (LLM)**: check the synthesis draft for quality using LLM evaluation against the user query and evidence. Scores the draft on pass/fail with a reason and confidence score.
+11. **Validate (HHEM)**: optionally score claim-level groundedness using a local HHEM model. Each claim in the draft is scored against source evidence, with LLM fallback to verify borderline failures. Best suited for RAG tool workflows where factual grounding against retrieved documents is critical.
+12. **Final Output**: for conversational requests, return the pre-generated response. For tasks, compose the final user-facing output from the validated synthesis draft.
+
+### Routing and Flow (Edges)
+
+Fixed edges define the guaranteed flow between stages:
+
+- Initialize → Classify → (routing decision)
+- Discover → Plan → (routing decision)
+- Execute → Reflect → Route
+- Synthesize → Validate → Route
+- Final Output → END
+
+Conditional edges control branching based on state:
+
+- **After Classify**: routes to Discover when a task intent is detected, to Plan for conversational queries, or directly to Final Output for greetings and off-topic input.
+- **After Plan**: routes to Decide to begin the task pipeline, or to Final Output if the planner answered a conversational query directly.
+- **After Decide**: routes to Execute when a tool call is chosen, or to Route when no tool is needed.
+- **After Route**: routes to Decide to retry or advance to the next task, to Synthesize when all source tasks are complete, or to Final Output when the workflow is done or retry limits are reached.
+
+### Shared State (AgentState)
+
+All nodes read from and write to a single shared state object that flows through the graph. Key state groups include:
+
+- **Phase and routing**: current phase (source, artifact, synthesis, final, conversational), router dispatch target, and failure type
+- **Task plan**: structured task list with current task pointer, generated by the Plan node
+- **Decision and tool calls**: active tool call, decision output, tool call history, and tool turn count
+- **Execution and evidence**: tool execution results, collected context evidence, and handoff data passed between tasks
+- **Retry tracking**: per-phase attempt counters (source, artifact, synthesis) checked against max retries
+- **Synthesis and validation**: draft output, validation report, and final response
+- **Metrics**: per-node timing and usage stats for observability
+
+### Tool Execution (MCP)
+
+SolidCue includes an MCP client that communicates with external MCP servers using the Streamable HTTP transport protocol. During the Execute node, the client connects to the configured MCP server, invokes the selected tool, and returns the result back into the graph state for downstream processing.
 
 ## Core Features
 
 - Interactive terminal UX using Typer, Rich, and InquirerPy
 - Config-driven agent setup via YAML files
-- MCP server registration and MCP tool discovery
+- Agent behavior controlled through editable markdown: PERSONA.md, SKILL.md, and TOOLS.md
+- LLM-driven task planning with multi-step execution and retry loops
+- MCP server registration and tool discovery via Streamable HTTP
 - Direct HTTP API tool configuration
 - Placeholder RAG tool configuration for retrieval workflows
+- Multi-phase validation using LLM evaluation and optional HHEM groundedness scoring
+- Evidence collection and handoff between tasks
 - Provider support:
   - OpenAI-compatible APIs
   - Anthropic
   - OpenRouter
 - User profile management (location, timezone, display name, preferences)
-- Debug mode for introspecting prompts, decisions, and validation flow
-- Optional Arize Phoenix tracing for LangGraph runs
+- Debug mode for inspecting agent config and per-node metric/token usage summary
+- Observability through Arize Phoenix and LangSmith tracing
+
+## LLM Providers
+
+SolidCue supports multiple LLM providers through a unified adapter interface:
+
+- **Anthropic** (Claude)
+- **OpenAI-compatible APIs**
+- **OpenRouter**
+
+Each agent can assign different providers to different roles, allowing cost and quality optimization per node:
+
+| Role | Used By | Purpose |
+|---|---|---|
+| `brain` | Plan, Decide | Complex reasoning and decision-making |
+| `lite` | Classify, Discover, Reflect, Final Output | Fast, low-cost operations |
+| `writer` | Synthesize | High-quality output generation |
+| `reviewer` | Validate | Draft evaluation and quality scoring |
+
+All roles fall back to the main `provider` if no role-specific provider is configured.
+
+Prompt caching is enabled across all providers to reduce repeated system prompt injection and improve model response efficiency.
+
+## Project Structure
+
+```text
+solidcue/
+├── agents/              Agent schemas, registry, loader, and YAML configs
+├── app/                 Typer CLI commands and CLI helpers
+├── core/
+│   ├── execution/       Provider resolution and execution utilities
+│   ├── graph/           Graph builder and compilation
+│   ├── graph_node/      All workflow stage node implementations
+│   ├── state/           AgentState schema definition
+│   └── utils/           Core utilities and metrics
+├── models/              Shared data models
+├── prompts/             Prompt templates for all graph nodes
+├── providers/           LLM provider adapters (Anthropic, OpenAI-compatible, OpenRouter)
+├── services/            Application services used by CLI commands
+├── tools/               Tool schemas, loader, registry, MCP client, and configs
+├── user/                User profile schema, loader, and config
+└── utils/               Shared utilities
+tests/                   Pytest test suite
+scripts/                 Local setup/install scripts
+bin/                     Optional CLI wrapper
+```
 
 ## Requirements
 
@@ -113,6 +216,9 @@ Show help:
 uv run cli --help
 ```
 
+![CLI help screenshot](assets/cli-helper-sc.png)
+*Caption: `uv run cli --help` output showing grouped command sections.*
+
 ### Setup Commands
 
 ```bash
@@ -154,9 +260,20 @@ uv run cli run-agent
 uv run cli run-agent --debug
 ```
 
+![CLI debug run screenshot](assets/cli-debug-sc.png)
+*Caption: Sample `uv run cli run-agent --debug` session with debug traces enabled.*
+
+### Debug Commands
+
+```bash
+uv run cli snap --list-keys
+uv run cli snap --decision
+uv run cli snap --live --latest-thread
+```
+
 Agent config path:
 
-- `solidcue/agents/configs/`
+- `solidcue/agents/<agent_key>/`
 
 ### Environment File Behavior
 
@@ -249,28 +366,7 @@ solidcue create-agent
 solidcue run-agent
 ```
 
-## Project Structure
-
-```text
-solidcue/
-  app/                 Typer CLI commands and CLI helpers
-  agents/              Agent schemas, registry, loader, and YAML configs
-  core/                LangGraph orchestration, state, nodes, and execution
-  memory/              Memory package placeholder
-  prompts/             Decision, reflection, and synthesis prompts
-  providers/           Provider adapters and provider resolution
-  services/            Application services used by CLI commands
-  storage/             Storage package placeholder
-  tasks/               Task package placeholder
-  tools/               Tool schemas, loader, registry, MCP client, and configs
-  user/                User profile schema, loader, and config
-  utils/               Shared utilities
-tests/                 Pytest test suite
-scripts/               Local setup/install scripts
-bin/                   Optional CLI wrapper
-```
-
-## Development
+## Test
 
 Run all tests:
 
@@ -281,7 +377,7 @@ uv run pytest
 Run a specific file:
 
 ```bash
-uv run pytest tests/test_orchestrator.py
+uv run pytest tests/test_graph_router_node.py
 ```
 
 ## Notes
@@ -289,4 +385,4 @@ uv run pytest tests/test_orchestrator.py
 - Agent, MCP server, and tool keys are generated from display names
 - Existing agent API key entries in `.env` are not overwritten
 - RAG tools currently generate a basic placeholder config
-- Use `--debug` to inspect decision, tool, validation, and prompt payloads
+- Use `--debug` to inspect agent config and per-node metric/token usage summary

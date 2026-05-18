@@ -34,18 +34,21 @@ def get_provider(provider_config) -> BaseProvider:
             base_url=config.base_url,
             api_key=api_key,
             model=config.model,
+            temperature=getattr(config, "temperature", None),
         )
 
     if config.type == "anthropic":
         return AnthropicProvider(
             api_key=api_key,
             model=config.model,
+            temperature=getattr(config, "temperature", None),
         )
 
     if config.type == "openrouter":
         return OpenRouterProvider(
             api_key=api_key,
             model=config.model,
+            temperature=getattr(config, "temperature", None),
         )
     
 

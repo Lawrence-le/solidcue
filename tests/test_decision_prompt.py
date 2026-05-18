@@ -1,4 +1,5 @@
 from solidcue.prompts.decision_prompt import build_decision_messages
+from solidcue.prompts import decision_prompt as decision_prompt_module
 class DummyAgent:
     agent_key = "generic_assistant"
     name = "Generic Assistant"
@@ -13,12 +14,9 @@ def test_retry_prompt_encourages_alternate_available_tool() -> None:
         retry_reason="Error executing tool search_web: SERPAPI_API_KEY is not configured",
     )
 
-    system_prompt = messages[0]["content"]
-    assert "If another available tool can satisfy the same user request" in system_prompt
-    assert "Do not repeat a failed tool call unless" in system_prompt
-    assert "no untried suitable tool remains" in system_prompt
-    assert "Respond with a limitation only when no available tool can help" in system_prompt
-    assert "do not mention internal tool names" in system_prompt
+    runtime_context = messages[1]["content"]
+    assert "TASK STATUS: INCOMPLETE" in runtime_context
+    assert "Error executing tool search_web: SERPAPI_API_KEY is not configured" in runtime_context
 
 
 def test_system_prompt_requires_explicit_tool_evidence() -> None:
@@ -28,10 +26,11 @@ def test_system_prompt_requires_explicit_tool_evidence() -> None:
     )
 
     system_prompt = messages[0]["content"]
-    assert "Treat tool outputs as evidence only for facts they explicitly contain" in system_prompt
-    assert 'Freshness terms such as "current", "currently", "latest", "today", "now", or "as of" are a hard trigger' in system_prompt
-    assert "Do not claim lack of live access when an available tool can check" in system_prompt
-    assert "You are not the responder" in system_prompt
+    runtime_context = messages[1]["content"]
+    assert "AVAILABLE TOOLS" in system_prompt
+    assert "RULES" in system_prompt
+    assert "Tool Use" in system_prompt
+    assert "TASK GUIDANCE" in runtime_context
 
 
 def test_system_prompt_excludes_agent_persona() -> None:
@@ -41,17 +40,74 @@ def test_system_prompt_excludes_agent_persona() -> None:
     )
     system_prompt = messages[0]["content"]
     assert "Persona guidance" not in system_prompt
-    assert "You are the Decision node for the Solidcue LangGraph agent" in system_prompt
-    assert "Choose the next graph route" in system_prompt
-    assert "tool_stage" in system_prompt
+    assert "You are the Controller for an AI Agent" in system_prompt
+    assert "OUTPUT FORMAT" in system_prompt
 
 
-def test_system_prompt_includes_persona_source_path_hints_from_metadata() -> None:
+def test_system_prompt_includes_source_path_hints_from_metadata() -> None:
     messages = build_decision_messages(
         agent=DummyAgent(),
         user_input="generate a resume",
-        metadata={"persona_source_paths": ["resume_agent/source/experience.md"]},
+        metadata={"source_paths": ["resume_agent/source/experience.md"]},
+    )
+    runtime_context = messages[1]["content"]
+    assert "Source path hints" in runtime_context
+    assert "resume_agent/source/experience.md" in runtime_context
+
+
+def test_system_prompt_includes_output_path_and_filename_hints_from_metadata() -> None:
+    messages = build_decision_messages(
+        agent=DummyAgent(),
+        user_input="generate a resume",
+        metadata={
+            "output_paths": ["resume_agent/generated_resumes/"],
+            "source_filenames": ["master_resume.md"],
+            "output_filenames": ["Lawrence Lee Resume.docx"],
+        },
+    )
+    runtime_context = messages[1]["content"]
+    assert "Output path hints" in runtime_context
+    assert "resume_agent/generated_resumes/" in runtime_context
+    assert "Source filename hints" in runtime_context
+    assert "master_resume.md" in runtime_context
+    assert "Output filename hints" in runtime_context
+    assert "Lawrence Lee Resume.docx" in runtime_context
+
+
+def test_system_prompt_includes_tools_guidance_from_tools_md(monkeypatch) -> None:
+    monkeypatch.setattr(
+        decision_prompt_module,
+        "load_agent_tools",
+        lambda _agent_key: "# TOOLS.md\nUse drive_list_by_path before drive_download_file.",
+    )
+    messages = build_decision_messages(
+        agent=DummyAgent(),
+        user_input="generate a resume",
     )
     system_prompt = messages[0]["content"]
-    assert "Persona source path hints" in system_prompt
-    assert "resume_agent/source/experience.md" in system_prompt
+    assert "Tools routing guidance" in system_prompt
+    assert "drive_list_by_path before drive_download_file" in system_prompt
+
+
+def test_system_prompt_includes_skill_guidance_from_skill_md(monkeypatch) -> None:
+    monkeypatch.setattr(
+        decision_prompt_module,
+        "load_agent_skill",
+        lambda _agent_key: "# SKILL.md\nUse title/filename format: YYYY-MM-DD_<name>_<company>_<role>_resume",
+    )
+    messages = build_decision_messages(
+        agent=DummyAgent(),
+        user_input="generate a resume",
+    )
+    system_prompt = messages[0]["content"]
+    assert "Skill guidance" in system_prompt
+    assert "Use title/filename format" in system_prompt
+
+
+def test_system_prompt_does_not_include_latest_execution_result_section() -> None:
+    messages = build_decision_messages(
+        agent=DummyAgent(),
+        user_input="download the resume",
+    )
+    system_prompt = messages[0]["content"]
+    assert "LATEST EXECUTION RESULT" not in system_prompt

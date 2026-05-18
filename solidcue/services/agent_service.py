@@ -1,10 +1,18 @@
 from pydantic import BaseModel
 from typing import Any, cast
 
-from solidcue.agents.configs.loader import list_agents, load_agent, save_agent, save_agent_persona
+from solidcue.agents.configs.loader import (
+    list_agents,
+    load_agent,
+    save_agent,
+    save_agent_persona,
+    save_agent_skill,
+    save_agent_tools,
+)
 from solidcue.agents.configs.schema import AgentConfig, ProviderConfig
 from solidcue.core.graph.builder import build_agent_graph
 from solidcue.core.state.schema import AgentState
+from solidcue.core.utils.debug import log_state
 from solidcue.user.loader import load_user_profile
 from solidcue.utils.env import generate_env_key, write_env_key
 from solidcue.utils.tracing import configure_langsmith_tracing_env, trace_langgraph_invoke
@@ -19,14 +27,22 @@ class CreateAgentInput(BaseModel):
     decision_base_url: str | None
     decision_api_key: str
     decision_model: str
-    sufficiency_provider_type: str
-    sufficiency_base_url: str | None
-    sufficiency_api_key: str
-    sufficiency_model: str
-    validator_provider_type: str
-    validator_base_url: str | None
-    validator_api_key: str
-    validator_model: str
+    decision_temperature: float
+    lite_provider_type: str
+    lite_base_url: str | None
+    lite_api_key: str
+    lite_model: str
+    lite_temperature: float
+    reviewer_provider_type: str
+    reviewer_base_url: str | None
+    reviewer_api_key: str
+    reviewer_model: str
+    reviewer_temperature: float
+    writer_provider_type: str | None = None
+    writer_base_url: str | None = None
+    writer_api_key: str | None = None
+    writer_model: str | None = None
+    writer_temperature: float | None = None
     selected_tools: list[str]
 
 
@@ -36,53 +52,77 @@ def _build_provider_config(
     base_url: str | None,
     api_key_env: str,
     model: str,
+    temperature: float | None,
 ) -> ProviderConfig:
     return ProviderConfig(
         type=provider_type,
         base_url=base_url or None,
         api_key_env=api_key_env,
         model=model,
+        temperature=temperature,
     )
 
 
 def create_agent(input_data: CreateAgentInput) -> tuple[AgentConfig, str]:
-    decision_env_key = generate_env_key(f"{input_data.agent_key}_decision")
-    sufficiency_env_key = generate_env_key(f"{input_data.agent_key}_sufficiency")
-    validator_env_key = generate_env_key(f"{input_data.agent_key}_validator")
-    write_env_key(decision_env_key, input_data.decision_api_key)
-    write_env_key(sufficiency_env_key, input_data.sufficiency_api_key)
-    write_env_key(validator_env_key, input_data.validator_api_key)
+    brain_env_key = generate_env_key(f"{input_data.agent_key}_brain")
+    lite_env_key = generate_env_key(f"{input_data.agent_key}_lite")
+    reviewer_env_key = generate_env_key(f"{input_data.agent_key}_reviewer")
+    writer_env_key = generate_env_key(f"{input_data.agent_key}_writer")
+    write_env_key(brain_env_key, input_data.decision_api_key)
+    write_env_key(lite_env_key, input_data.lite_api_key)
+    write_env_key(reviewer_env_key, input_data.reviewer_api_key)
+    if input_data.writer_api_key:
+        write_env_key(writer_env_key, input_data.writer_api_key)
 
-    decision_provider = _build_provider_config(
+    brain_provider = _build_provider_config(
         provider_type=input_data.decision_provider_type,
         base_url=input_data.decision_base_url,
-        api_key_env=decision_env_key,
+        api_key_env=brain_env_key,
         model=input_data.decision_model,
+        temperature=input_data.decision_temperature,
     )
-    sufficiency_provider = _build_provider_config(
-        provider_type=input_data.sufficiency_provider_type,
-        base_url=input_data.sufficiency_base_url,
-        api_key_env=sufficiency_env_key,
-        model=input_data.sufficiency_model,
+    lite_provider = _build_provider_config(
+        provider_type=input_data.lite_provider_type,
+        base_url=input_data.lite_base_url,
+        api_key_env=lite_env_key,
+        model=input_data.lite_model,
+        temperature=input_data.lite_temperature,
     )
-    validator_provider = _build_provider_config(
-        provider_type=input_data.validator_provider_type,
-        base_url=input_data.validator_base_url,
-        api_key_env=validator_env_key,
-        model=input_data.validator_model,
+    reviewer_provider = _build_provider_config(
+        provider_type=input_data.reviewer_provider_type,
+        base_url=input_data.reviewer_base_url,
+        api_key_env=reviewer_env_key,
+        model=input_data.reviewer_model,
+        temperature=input_data.reviewer_temperature,
     )
+    writer_provider = None
+    if (
+        input_data.writer_provider_type
+        and input_data.writer_model
+        and input_data.writer_api_key
+    ):
+        writer_provider = _build_provider_config(
+            provider_type=input_data.writer_provider_type,
+            base_url=input_data.writer_base_url,
+            api_key_env=writer_env_key,
+            model=input_data.writer_model,
+            temperature=input_data.writer_temperature,
+        )
 
     config = AgentConfig(
         agent_key=input_data.agent_key,
         name=input_data.name,
         description=input_data.description,
-        provider=decision_provider,
-        sufficiency_provider=sufficiency_provider,
-        validator_provider=validator_provider,
+        provider=brain_provider,
+        lite_provider=lite_provider,
+        reviewer_provider=reviewer_provider,
+        writer_provider=writer_provider,
         tools=input_data.selected_tools,
     )
     path = save_agent(config)
     save_agent_persona(config.agent_key)
+    save_agent_skill(config.agent_key)
+    save_agent_tools(config.agent_key)
     return config, str(path)
 
 
@@ -110,6 +150,27 @@ def _build_run_config(
         "tags": ["solidcue", "langgraph", f"agent:{agent_key}"],
         "metadata": metadata,
     }
+
+
+def _invoke_graph(
+    *,
+    graph: Any,
+    input_payload: Any,
+    run_config: dict[str, Any],
+    debug: bool,
+) -> Any:
+    if not debug:
+        return graph.invoke(input_payload, config=run_config)
+
+    for update in graph.stream(input_payload, config=run_config, stream_mode="updates"):
+        if not isinstance(update, dict):
+            continue
+        for node_name, node_delta in update.items():
+            if isinstance(node_delta, dict):
+                log_state(str(node_name), node_delta)
+
+    snapshot = graph.get_state(run_config)
+    return snapshot.values
 
 
 def run_agent(
@@ -144,7 +205,12 @@ def run_agent(
                 "solidcue.thread_id": thread_id,
                 "solidcue.debug": debug,
             },
-            invoke=lambda: graph.invoke(state, config=run_config),
+            invoke=lambda: _invoke_graph(
+                graph=graph,
+                input_payload=state,
+                run_config=run_config,
+                debug=debug,
+            ),
         ),
     )
     return agent, result
@@ -182,7 +248,12 @@ def run_agent_step(
                     "solidcue.thread_id": thread_id,
                     "solidcue.debug": debug,
                 },
-                invoke=lambda: graph.invoke(Command(resume=resume_value), config=run_config),
+                invoke=lambda: _invoke_graph(
+                    graph=graph,
+                    input_payload=Command(resume=resume_value),
+                    run_config=run_config,
+                    debug=debug,
+                ),
             ),
         )
 
@@ -204,6 +275,11 @@ def run_agent_step(
                 "solidcue.thread_id": thread_id,
                 "solidcue.debug": debug,
             },
-            invoke=lambda: graph.invoke(state, config=run_config),
+            invoke=lambda: _invoke_graph(
+                graph=graph,
+                input_payload=state,
+                run_config=run_config,
+                debug=debug,
+            ),
         ),
     )

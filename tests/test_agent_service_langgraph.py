@@ -45,7 +45,7 @@ def test_run_agent_uses_langgraph_invoke(monkeypatch) -> None:
     assert result["workflow_status"] == "completed"
 
 
-def test_create_agent_creates_persona_file(monkeypatch) -> None:
+def test_create_agent_creates_instruction_files(monkeypatch) -> None:
     captured = {"saved_agent_key": None}
 
     monkeypatch.setattr(agent_service_module, "write_env_key", lambda *_: None)
@@ -59,8 +59,18 @@ def test_create_agent_creates_persona_file(monkeypatch) -> None:
         captured["persona_key"] = agent_key
         return "/tmp/generic_assistant/PERSONA.md"
 
+    def _save_agent_skill(agent_key: str):
+        captured["skill_key"] = agent_key
+        return "/tmp/generic_assistant/SKILL.md"
+
+    def _save_agent_tools(agent_key: str):
+        captured["tools_key"] = agent_key
+        return "/tmp/generic_assistant/TOOLS.md"
+
     monkeypatch.setattr(agent_service_module, "save_agent", _save_agent)
     monkeypatch.setattr(agent_service_module, "save_agent_persona", _save_agent_persona)
+    monkeypatch.setattr(agent_service_module, "save_agent_skill", _save_agent_skill)
+    monkeypatch.setattr(agent_service_module, "save_agent_tools", _save_agent_tools)
 
     input_data = CreateAgentInput(
         name="Generic Assistant",
@@ -70,14 +80,22 @@ def test_create_agent_creates_persona_file(monkeypatch) -> None:
         decision_base_url="http://localhost:11434/v1",
         decision_api_key="x",
         decision_model="model-a",
-        sufficiency_provider_type="openai_compatible",
-        sufficiency_base_url="http://localhost:11434/v1",
-        sufficiency_api_key="y",
-        sufficiency_model="model-b",
-        validator_provider_type="openai_compatible",
-        validator_base_url="http://localhost:11434/v1",
-        validator_api_key="z",
-        validator_model="model-c",
+        decision_temperature=0.3,
+        lite_provider_type="openai_compatible",
+        lite_base_url="http://localhost:11434/v1",
+        lite_api_key="y",
+        lite_model="model-b",
+        lite_temperature=0.1,
+        reviewer_provider_type="openai_compatible",
+        reviewer_base_url="http://localhost:11434/v1",
+        reviewer_api_key="z",
+        reviewer_model="model-c",
+        reviewer_temperature=0.1,
+        writer_provider_type="openai_compatible",
+        writer_base_url="http://localhost:11434/v1",
+        writer_api_key="w",
+        writer_model="model-d",
+        writer_temperature=0.7,
         selected_tools=[],
     )
 
@@ -85,3 +103,5 @@ def test_create_agent_creates_persona_file(monkeypatch) -> None:
     assert config.agent_key == "generic_assistant"
     assert captured["saved_agent_key"] == "generic_assistant"
     assert captured["persona_key"] == "generic_assistant"
+    assert captured["skill_key"] == "generic_assistant"
+    assert captured["tools_key"] == "generic_assistant"

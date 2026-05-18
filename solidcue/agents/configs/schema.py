@@ -8,6 +8,7 @@ class ProviderConfig(BaseModel):
     base_url: str | None = None
     api_key_env: str
     model: str
+    temperature: float | None = None
 
 
 class AgentConfig(BaseModel):
@@ -17,8 +18,9 @@ class AgentConfig(BaseModel):
     description: str = ""
 
     provider: ProviderConfig
-    sufficiency_provider: ProviderConfig | None = None
-    validator_provider: ProviderConfig | None = None
+    lite_provider: ProviderConfig | None = None
+    reviewer_provider: ProviderConfig | None = None
+    writer_provider: ProviderConfig | None = None
 
     tools: list[str] = Field(default_factory=list)
     allowed_tasks: list[str] = Field(default_factory=list)

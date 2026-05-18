@@ -1,6 +1,10 @@
 tool_key: drive_upload_file
 name: Drive Upload File
-description: Upload a file to Google Drive using Base64-encoded content.
+description:
+  "Upload a file to Google Drive using Base64-encoded content. Set mime_type
+  to the file's real content type so Drive stores and previews it correctly (for
+  example: application/pdf, image/png, application/zip). If omitted, mime_type defaults
+  to application/vnd.openxmlformats-officedocument.wordprocessingml.document."
 type: mcp
 enabled: true
 approval_mode: never
@@ -12,24 +16,35 @@ mcp:
   input_schema:
     properties:
       name:
+        description:
+          File name including extension (e.g. 'report.docx', 'data.csv',
+          'photo.png'). The extension is required for Google Drive to open and preview
+          the file correctly.
         title: Name
         type: string
       content_base64:
+        description: Base64-encoded file bytes.
         title: Content Base64
         type: string
       mime_type:
-        default: application/octet-stream
+        default: application/vnd.openxmlformats-officedocument.wordprocessingml.document
+        description:
+          Optional MIME type for Drive metadata and content upload. Choose
+          the true content type (for example application/pdf, image/png, text/plain,
+          application/zip, application/vnd.openxmlformats-officedocument.wordprocessingml.document
+          for .docx). If omitted, defaults to application/vnd.openxmlformats-officedocument.wordprocessingml.document.
         title: Mime Type
         type: string
       parent_id:
         anyOf:
-        - type: string
-        - type: 'null'
+          - type: string
+          - type: "null"
         default: null
+        description: Optional Drive folder id to place uploaded file.
         title: Parent Id
     required:
-    - name
-    - content_base64
+      - name
+      - content_base64
     title: drive_upload_fileArguments
     type: object
 api: null

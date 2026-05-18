@@ -1,12 +1,146 @@
 import asyncio
+import base64
 import json
+import re
+from html.parser import HTMLParser
 from typing import Any, cast
+
+from markdown_it import MarkdownIt
 
 from solidcue.agents.configs.loader import load_agent
 from solidcue.app.utils.helpers import normalize_tool_output
 from solidcue.core.state.schema import AgentState
 from solidcue.tools.loader import load_mcp_server, load_tool
 from solidcue.tools.mcp.client import MCPClient
+
+
+TEXT_EXPORT_MIME_TYPES = {
+    "application/json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+}
+
+
+def _is_valid_base64(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    if not stripped:
+        return False
+    try:
+        base64.b64decode(stripped, validate=True)
+        return True
+    except Exception:
+        return False
+
+
+def _get_current_task(state: AgentState) -> dict[str, Any] | None:
+    task_plan = state.get("task_plan")
+    current_task_id = state.get("current_task")
+    if not isinstance(task_plan, list) or not current_task_id:
+        return None
+    return next((t for t in task_plan if isinstance(t, dict) and t.get("id") == current_task_id), None)
+
+
+def _write_handoff(state: AgentState, execution_result: dict[str, Any]) -> dict[str, Any] | None:
+    """Store successful task output in the handoff under its requires key."""
+    if execution_result.get("success") is not True:
+        return None
+    task = _get_current_task(state)
+    if not task:
+        return None
+    requires = task.get("requires")
+    if not isinstance(requires, list) or not requires:
+        return None
+    requires_key = str(requires[0])
+    content = execution_result.get("content")
+    if content is None:
+        return None
+    handoff = dict(state.get("handoff") or {})
+    handoff[requires_key] = content
+    return handoff
+
+
+_LARGE_PAYLOAD_FIELDS = {"content_base64", "content", "body", "text", "data"}
+_MIN_REAL_CONTENT_LENGTH = 200
+_TRUNCATION_MARKER = "… [truncated]"
+
+
+def _needs_handoff_fill(value: Any) -> bool:
+    """True when the LLM-provided value is likely a placeholder, not real content.
+
+    Large payload fields (content, content_base64, etc.) should contain
+    substantial data.  Anything under _MIN_REAL_CONTENT_LENGTH is treated
+    as a placeholder or truncated fragment that the handoff should replace.
+    Values ending with the prompt-layer truncation marker are always replaced.
+    """
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    if stripped.endswith(_TRUNCATION_MARKER):
+        return True
+    return len(stripped) < _MIN_REAL_CONTENT_LENGTH
+
+
+def _is_truncated_copy(llm_value: str, handoff_value: str) -> bool:
+    """True when the LLM value is a prefix of the handoff value.
+
+    The prompt layer truncates expensive fields to ~200 chars.  The LLM
+    sometimes copies that truncated fragment (with or without the marker).
+    If the handoff holds a longer string that starts with the same bytes,
+    the LLM value is almost certainly a truncated copy — use the handoff.
+    """
+    return (
+        len(handoff_value) > len(llm_value)
+        and handoff_value.startswith(llm_value.rstrip().removesuffix(_TRUNCATION_MARKER).rstrip())
+    )
+
+
+def _fill_from_handoff(
+    arguments: dict[str, Any],
+    tool_params: set[str],
+    handoff: dict[str, Any],
+    excluded_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    """Inject large payload fields from the handoff into tool arguments.
+
+    Only overrides when the LLM-provided value is missing, is a
+    truncation placeholder, or is a truncated copy of the handoff value.
+    When the LLM provides real content (e.g. synthesis_draft passed as
+    document content), it is preserved.
+    """
+    fields_to_fill = tool_params & _LARGE_PAYLOAD_FIELDS
+    if not fields_to_fill:
+        return arguments
+    merged = dict(arguments)
+    blocked = excluded_keys or set()
+    candidate_sources: list[Any] = [
+        value for key, value in handoff.items() if key not in blocked
+    ]
+    for field in fields_to_fill:
+        current_value = merged.get(field)
+        needs_fill = _needs_handoff_fill(current_value)
+        for dep in reversed(candidate_sources):
+            if isinstance(dep, dict) and field in dep:
+                candidate = dep[field]
+                if field == "content_base64" and not _is_valid_base64(candidate):
+                    continue
+                if candidate is None:
+                    continue
+                if isinstance(candidate, str) and not candidate.strip():
+                    continue
+                # Fill if value is a placeholder OR a truncated copy of the handoff
+                if needs_fill or (
+                    isinstance(current_value, str)
+                    and isinstance(candidate, str)
+                    and _is_truncated_copy(current_value, candidate)
+                ):
+                    merged[field] = candidate
+                break
+    return merged
 
 
 def _execution_result(success: bool, result_type: str, content: Any, error: Any) -> dict[str, Any]:
@@ -18,8 +152,12 @@ def _execution_result(success: bool, result_type: str, content: Any, error: Any)
     }
 
 
-def _record_tool_call(state: AgentState) -> list[dict[str, Any]]:
-    decision = state.get("active_tool_call") or state.get("decision")
+def _record_tool_call(
+    state: AgentState,
+    success: bool,
+    execution_result: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    decision = state.get("active_tool_call")
     if not isinstance(decision, dict):
         return []
 
@@ -31,139 +169,199 @@ def _record_tool_call(state: AgentState) -> list[dict[str, Any]]:
     history = state.get("tool_call_history")
     normalized_history = history if isinstance(history, list) else []
     normalized_tool_input = tool_input if isinstance(tool_input, dict) else {}
+    task_id = state.get("current_task")
+
+    effective_execution_result = execution_result if isinstance(execution_result, dict) else (state.get("execution_result") or {})
     return [
         *normalized_history,
         {
+            "task_id": str(task_id) if isinstance(task_id, str) and task_id else None,
             "tool_name": tool_name,
             "tool_input": normalized_tool_input,
-            "signature": (
-                f"{tool_name}:"
-                f"{json.dumps(normalized_tool_input, sort_keys=True, ensure_ascii=True, default=str)}"
-            ),
+            "success": success,
+            "execution_result": effective_execution_result if isinstance(effective_execution_result, dict) else None,
         },
     ]
 
 
-def _build_source_evidence_entry(
-    state: AgentState,
-    execution_result: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Build a single new evidence entry, or None if execution didn't produce material content.
+def _is_text_mime_type(mime_type: Any) -> bool:
+    if not isinstance(mime_type, str):
+        return False
 
-    Caller is responsible for appending into context_evidence (legacy, full overwrite)
-    and source_evidence (redesign, append-only via operator.add reducer).
+    normalized = mime_type.split(";", maxsplit=1)[0].strip().lower()
+    return normalized.startswith("text/") or normalized in TEXT_EXPORT_MIME_TYPES or normalized.endswith("+json")
+
+
+def _decode_text_bytes(raw: bytes) -> str:
+    return raw.decode("utf-8-sig", errors="replace").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _decode_file_content(content: Any) -> Any:
+    """Normalize tool output: parse JSON strings to dicts and decode base64 file content.
+
+    normalize_tool_output may return a JSON string (via MCP text content items).
+    This function ensures callers always receive a dict so field access works
+    uniformly — whether checking for documentId, encoding, or file text.
     """
-    decision = state.get("active_tool_call") or state.get("decision")
-    if not isinstance(decision, dict) or decision.get("tool_stage") != "context":
-        return None
-
-    if not isinstance(execution_result, dict) or execution_result.get("success") is not True:
-        return None
-
-    content = execution_result.get("content")
-    if content is None:
-        return None
-    content_text = str(content).strip()
-    if not content_text:
-        return None
-
-    tool_name = decision.get("tool_name")
-    tool_input = decision.get("tool_input")
-    return {
-        "tool_name": tool_name if isinstance(tool_name, str) else "",
-        "tool_input": tool_input if isinstance(tool_input, dict) else {},
-        "content": content_text,
-    }
-
-
-def _append_context_evidence(
-    state: AgentState,
-    new_entry: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Legacy: build full context_evidence list by appending new entry to prior state."""
-    existing = state.get("context_evidence")
-    history = list(existing) if isinstance(existing, list) else []
-    history.append(new_entry)
-    return history
-
-
-def _source_id_from_input(tool_input: Any) -> str | None:
-    if not isinstance(tool_input, dict):
-        return None
-    for key in ("file_id", "document_id", "spreadsheet_id", "id"):
-        value = tool_input.get(key)
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    return None
-
-
-def _extract_files(content: Any) -> list[dict[str, Any]]:
     if isinstance(content, str):
+        stripped = content.strip()
+        if not stripped.startswith("{"):
+            return content
         try:
-            content = json.loads(content)
+            parsed = json.loads(stripped)
         except json.JSONDecodeError:
-            return []
+            return content
+        if not isinstance(parsed, dict):
+            return content
+    elif isinstance(content, dict):
+        parsed = content
+    else:
+        return content
+
+    if parsed.get("encoding") == "base64":
+        raw = parsed.get("content")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                decoded_bytes = base64.b64decode(raw)
+                mime_type = parsed.get("mimeType") or parsed.get("mime_type")
+                if mime_type and not _is_text_mime_type(mime_type):
+                    return parsed
+
+                decoded = _decode_text_bytes(decoded_bytes)
+                result = {k: v for k, v in parsed.items() if k not in ("encoding", "content")}
+                result["content"] = decoded
+                return result
+            except Exception:
+                pass
+
+    return parsed
+
+
+
+
+
+# ======================================================================================
+#                          WEB CONTENT CLEANING
+# Cleans scraped web content immediately after tool execution so that all downstream
+# nodes (reflection, synthesis) always receive clean, noise-free content.
+#
+# Flow:
+#   _is_web_content   — detects if tool output is scraped web content
+#   _HTMLTextExtractor — strips HTML tags from raw HTML output
+#   _strip_html        — convenience wrapper around _HTMLTextExtractor
+#   _clean_text        — removes boilerplate lines + normalises markdown
+#   _clean_content     — orchestrates detection + cleaning on tool output
+# ======================================================================================
+
+_WEB_CONTENT_KEYS = {"text", "html", "markdown"}
+
+_NOISE_LINE_RE = re.compile(
+    r"^(skip to|sign in|join now|log in|sign up|cookie|subscribe|advertisement|"
+    r"see who|apply|save|show more|show less|\d+\s+applicants?|clear text|"
+    r"use ai|am i a good fit|tailor my resume|get ai[- ]powered)",
+    re.IGNORECASE,
+)
+
+_md = MarkdownIt()
+
+
+def _is_web_content(content: Any) -> bool:
+    """Detect scraped web content by checking for common scraper output keys."""
     if isinstance(content, dict):
-        files = content.get("files")
-        if isinstance(files, list):
-            return [file for file in files if isinstance(file, dict)]
-    return []
+        return bool(_WEB_CONTENT_KEYS & content.keys())
+    if isinstance(content, list) and content:
+        return all(isinstance(item, dict) and bool(_WEB_CONTENT_KEYS & item.keys()) for item in content)
+    return False
 
 
-def _update_source_manifest(
-    state: AgentState,
-    execution_result: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    if not isinstance(execution_result, dict) or execution_result.get("success") is not True:
-        return None
+class _HTMLTextExtractor(HTMLParser):
+    """Strip HTML tags and collect visible text."""
+    _SKIP_TAGS = {"script", "style", "noscript", "head"}
 
-    decision = state.get("active_tool_call") or state.get("decision")
-    if not isinstance(decision, dict) or decision.get("tool_stage") != "context":
-        return None
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._skip = 0
 
-    manifest = dict(state.get("source_manifest") or {})
-    sources = list(manifest.get("sources") or [])
-    by_id = {
-        str(source.get("id")): dict(source)
-        for source in sources
-        if isinstance(source, dict) and source.get("id") is not None
-    }
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag.lower() in self._SKIP_TAGS:
+            self._skip += 1
 
-    content = execution_result.get("content")
-    for file in _extract_files(content):
-        file_id = file.get("id") or file.get("file_id") or file.get("document_id")
-        if file_id is None:
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in self._SKIP_TAGS and self._skip > 0:
+            self._skip -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        return "\n".join(self._parts)
+
+
+def _strip_html(text: str) -> str:
+    extractor = _HTMLTextExtractor()
+    extractor.feed(text)
+    return extractor.get_text()
+
+
+def _clean_text(text: str) -> str:
+    """Strip HTML/boilerplate from scraped web content — zero LLM cost."""
+    if re.search(r"<[a-zA-Z][^>]*>", text):
+        text = _strip_html(text)
+    else:
+        tokens = _md.parse(text)
+        plain_parts: list[str] = []
+        for token in tokens:
+            if token.type == "inline" and token.children:
+                for child in token.children:
+                    if child.type == "text" and child.content:
+                        plain_parts.append(child.content)
+            elif token.content:
+                plain_parts.append(token.content)
+        if plain_parts:
+            text = "\n".join(plain_parts)
+
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or len(stripped) < 4:
             continue
-        file_id_text = str(file_id).strip()
-        if not file_id_text:
+        if _NOISE_LINE_RE.match(stripped):
             continue
-        existing = by_id.get(file_id_text, {})
-        existing.update(
-            {
-                "id": file_id_text,
-                "name": str(file.get("name") or existing.get("name") or ""),
-                "uri": str(file.get("webViewLink") or existing.get("uri") or ""),
-                "mime_type": str(file.get("mimeType") or existing.get("mime_type") or ""),
-                "status": existing.get("status") or "listed",
-                "read_attempts": int(existing.get("read_attempts", 0)),
-            }
-        )
-        by_id[file_id_text] = existing
+        lines.append(stripped)
 
-    read_id = _source_id_from_input(decision.get("tool_input"))
-    if read_id and content is not None and str(content).strip():
-        existing = by_id.get(read_id, {"id": read_id, "read_attempts": 0})
-        existing["status"] = "read"
-        existing["read_attempts"] = int(existing.get("read_attempts", 0)) + 1
-        by_id[read_id] = existing
+    result = "\n".join(lines)
+    return result or text
 
-    if not by_id:
-        return None
 
-    return {"sources": list(by_id.values())}
+def _clean_content(content: Any) -> Any:
+    """Clean web content and strip raw web keys. Non-web content is returned as-is."""
+    if not _is_web_content(content):
+        return content
+
+    if isinstance(content, list):
+        cleaned = []
+        for item in content:
+            raw = str(item.get("html") or item.get("text") or item.get("markdown") or item.get("content") or "").strip()
+            if raw:
+                meta = {k: v for k, v in item.items() if k not in _WEB_CONTENT_KEYS}
+                cleaned.append({**meta, "text": _clean_text(raw)})
+        return cleaned
+
+    if isinstance(content, dict):
+        raw = str(content.get("html") or content.get("text") or content.get("markdown") or content.get("content") or "").strip()
+        meta = {k: v for k, v in content.items() if k not in _WEB_CONTENT_KEYS}
+        return {**meta, "text": _clean_text(raw)}
+
+    return content
+
+
+# ======================================================================================
+
 
 def _execute_tool(state: AgentState) -> dict[str, Any]:
-    decision = cast(dict[str, Any], state.get("active_tool_call") or state.get("decision") or {})
+    decision = cast(dict[str, Any], state.get("active_tool_call") or {})
 
     action = decision.get("action")
 
@@ -178,7 +376,21 @@ def _execute_tool(state: AgentState) -> dict[str, Any]:
         }
 
     tool_key = decision.get("tool_name")
-    arguments = decision.get("tool_input") or {}
+    raw_arguments = decision.get("tool_input")
+    arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+
+    handoff = state.get("handoff")
+    if isinstance(handoff, dict) and handoff:
+        try:
+            tool_cfg = load_tool(tool_key)
+            schema = getattr(getattr(tool_cfg, "mcp", None), "input_schema", None)
+            tool_params = set(schema.get("properties", {}).keys()) if isinstance(schema, dict) else set()
+            task = _get_current_task(state)
+            requires = task.get("requires") if isinstance(task, dict) else None
+            current_output_keys = {str(item) for item in requires if isinstance(item, str)} if isinstance(requires, list) else set()
+            arguments = _fill_from_handoff(arguments, tool_params, handoff, excluded_keys=current_output_keys)
+        except Exception:
+            pass
     agent_key = state.get("agent_key")
     if not isinstance(agent_key, str) or not agent_key:
         return {
@@ -209,9 +421,11 @@ def _execute_tool(state: AgentState) -> dict[str, Any]:
             )
         )
 
-        normalized_output = normalize_tool_output(raw_output)
+        normalized_output = _decode_file_content(normalize_tool_output(raw_output))
         is_tool_error = bool(raw_output.get("is_error"))
-        if is_tool_error and "Unable to reach Open-Meteo service" in normalized_output:
+        if not is_tool_error:
+            normalized_output = _clean_content(normalized_output)
+        if is_tool_error and isinstance(normalized_output, str) and "Unable to reach Open-Meteo service" in normalized_output:
             normalized_output = (
                 f"{normalized_output}. The MCP server is running, but its outbound network to Open-Meteo failed."
             )
@@ -224,21 +438,6 @@ def _execute_tool(state: AgentState) -> dict[str, Any]:
                 error=normalized_output if is_tool_error else None,
             )
         }
-
-        existing_messages = state.get("messages", [])
-        if isinstance(existing_messages, list) and existing_messages:
-            last_msg = existing_messages[-1]
-            tool_calls = last_msg.get("tool_calls", []) if isinstance(last_msg, dict) else []
-            tool_call_id = tool_calls[0].get("id") if tool_calls else f"tool_call_{state.get('attempt', 0)}"
-
-            # LangGraph compatibility: return only newly produced message delta.
-            update["messages"] = [
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": json.dumps(raw_output, default=str),
-                }
-            ]
 
         return update
 
@@ -258,9 +457,7 @@ def _execute_tool(state: AgentState) -> dict[str, Any]:
 
 
 def execution_node(state: AgentState) -> dict[str, Any]:
-    update: dict[str, Any] = {
-        "tool_call_history": _record_tool_call(state),
-    }
+    update: dict[str, Any] = {}
 
     execution_update = _execute_tool(state)
     update.update(execution_update)
@@ -269,25 +466,17 @@ def execution_node(state: AgentState) -> dict[str, Any]:
     tool_turn_count = tool_turn_count_value if isinstance(tool_turn_count_value, int) else 0
     update["tool_turn_count"] = tool_turn_count + 1
 
-    attempt_value = state.get("attempt")
-    attempt = attempt_value if isinstance(attempt_value, int) else 0
-    update["attempt"] = attempt + 1
-
     execution_result = execution_update.get("execution_result")
+    succeeded = isinstance(execution_result, dict) and execution_result.get("success") is True
+    update["tool_call_history"] = _record_tool_call(
+        state,
+        success=succeeded,
+        execution_result=execution_result if isinstance(execution_result, dict) else None,
+    )
+
     if isinstance(execution_result, dict):
-        new_entry = _build_source_evidence_entry(state, execution_result)
-        if new_entry is not None:
-            # Legacy: full list overwrite for context_evidence (still read by artifact_generation_node)
-            update["context_evidence"] = _append_context_evidence(state, new_entry)
-            # Redesign: append-only via operator.add reducer — return delta only
-            update["source_evidence"] = [new_entry]
-        source_manifest = _update_source_manifest(state, execution_result)
-        if source_manifest is not None:
-            update["source_manifest"] = source_manifest
-        if execution_result.get("success") is False:
-            failure_reason = execution_result.get("error") or execution_result.get("content")
-            update["retry_reason"] = str(failure_reason) if failure_reason else "Tool execution failed."
-        else:
-            update["retry_reason"] = None
+        updated_handoff = _write_handoff(state, execution_result)
+        if updated_handoff is not None:
+            update["handoff"] = updated_handoff
 
     return update

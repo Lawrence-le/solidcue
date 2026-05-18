@@ -4,41 +4,39 @@ name: Resume Builder
 description: Build resume that is industry standard and ATS compatible.
 provider:
   type: openai_compatible
-  base_url: http://localhost:11434/v1
-  api_key_env: RESUME_BUILDER_DECISION_API_KEY
-  model: gemma4:latest
-sufficiency_provider:
+  base_url: https://api.stepfun.ai/step_plan/v1
+  api_key_env: RESUME_BUILDER_BRAIN_API_KEY
+  model: step-3.5-flash
+  temperature: 0.3
+lite_provider:
   type: openai_compatible
-  base_url: http://localhost:11434/v1
-  api_key_env: RESUME_BUILDER_SUFFICIENCY_API_KEY
-  model: gemma4:latest
-validator_provider:
+  base_url: https://api.stepfun.ai/step_plan/v1
+  api_key_env: RESUME_BUILDER_LITE_API_KEY
+  model: step-3.5-flash
+  temperature: 0.1
+reviewer_provider:
   type: openai_compatible
-  base_url: http://localhost:11434/v1
-  api_key_env: RESUME_BUILDER_VALIDATOR_API_KEY
-  model: gemma4:latest
+  base_url: https://api.stepfun.ai/step_plan/v1
+  api_key_env: RESUME_BUILDER_REVIEWER_API_KEY
+  model: step-3.5-flash
+  temperature: 0.1
+writer_provider:
+  type: openai_compatible
+  base_url: https://api.stepfun.ai/step_plan/v1
+  api_key_env: RESUME_BUILDER_WRITER_API_KEY
+  model: step-3.5-flash
+  temperature: 0.7
 tools:
-  - google_auth_status
-  - google_auth_clear
-  - drive_search_files
   - drive_list_by_path
   - drive_download_file
-  - docs_create_document
-  - docs_append_text
-  - sheets_create_spreadsheet
-  - sheets_write_values
-  - sheets_batch_update
-  - sheets_get_spreadsheet
-  - sheets_create_job_tracker
-  - browser_screenshot
-  - browser_click
-  - browser_close
-  - search_web_images
-  - browser_type
-  - browser_get_text
-  - browser_status
-  - search_web
+  - drive_upload_file
+  - drive_ensure_folder_path
   - browser_navigate
+  - browser_get_html
+  - create_formatted_word_document_base64
+  - sheets_read_values
+  - sheets_get_spreadsheet
+  - sheets_write_values
 
 allowed_tasks: []
 style: {}

@@ -10,12 +10,11 @@ from rich.theme import Theme
 from typing import Any
 import json
 
-from solidcue.agents.configs.loader import get_persona_path
+from solidcue.agents.configs.loader import get_persona_path, get_skill_path, get_tools_path
 from solidcue.app.utils.helpers import print_select_hint
 from solidcue.app.utils.normalize import normalize_key
 from solidcue.core.utils.debug import (
     print_debug_header,
-    print_debug_messages,
     print_debug_value,
 )
 from solidcue.providers.config import PROVIDER_META
@@ -24,6 +23,12 @@ from solidcue.services.agent_service import (
     create_agent as create_agent_service,
     get_agents,
     run_agent_step as run_agent_step_service,
+)
+from solidcue.services.state_snapshot_service import (
+    build_live_state_snapshot,
+    build_state_snapshot,
+    get_latest_thread_id,
+    list_agent_state_keys,
 )
 from solidcue.services.thread_service import create_thread_id
 from solidcue.tools.loader import list_tools
@@ -52,6 +57,96 @@ def register(app: typer.Typer) -> None:
     app.command("create-agent", rich_help_panel="Agent")(create_agent)
     app.command("list-agents", rich_help_panel="Agent")(list_agents_cmd)
     app.command("run-agent", rich_help_panel="Agent")(run_agent_cmd)
+    app.command("snap", rich_help_panel="Debug")(snap_cmd)
+
+
+def snap_cmd(
+    decision: bool = typer.Option(False, "--decision", help="Shortcut for decision-related state keys."),
+    key: list[str] | None = typer.Option(None, "--key", help="State key to include (repeatable)."),
+    all_keys: bool = typer.Option(False, "--all", help="Include all AgentState schema keys."),
+    list_keys: bool = typer.Option(False, "--list-keys", help="List available AgentState keys and exit."),
+    live: bool = typer.Option(False, "--live", help="Read live state from LangGraph checkpoint for a thread."),
+    thread_id: str | None = typer.Option(None, "--thread-id", help="Thread id to read when using --live."),
+    latest_thread: bool = typer.Option(False, "--latest-thread", help="Use the most recent checkpointed thread id."),
+    as_json: bool = typer.Option(False, "--json", help="Print raw JSON output."),
+) -> None:
+    """Print example state snapshots for quick debugging."""
+    if list_keys:
+        keys = list_agent_state_keys()
+        if as_json:
+            print(json.dumps({"available_keys": keys}, indent=2, ensure_ascii=False))
+            return
+        print_debug_header("AVAILABLE STATE KEYS")
+        for item in keys:
+            print(f"- {item}")
+        return
+
+    selected_keys = list(key or [])
+    if decision:
+        selected_keys.extend(
+            [
+                "phase",
+                "current_task",
+                "router_next",
+                "retry_reason",
+                "task_plan",
+                "metadata",
+                "tool_call_history",
+                "decision",
+                "active_tool_call",
+                "execution_result",
+            ]
+        )
+    if live:
+        resolved_thread_id = thread_id.strip() if isinstance(thread_id, str) and thread_id.strip() else None
+        if resolved_thread_id is None and latest_thread:
+            resolved_thread_id = get_latest_thread_id()
+        if not resolved_thread_id:
+            print(
+                json.dumps(
+                    {
+                        "error": "Missing thread id for live snapshot. Use --thread-id or --latest-thread.",
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            raise typer.Exit(1)
+        payload = build_live_state_snapshot(
+            thread_id=resolved_thread_id,
+            keys=selected_keys,
+            include_all=all_keys,
+        )
+    else:
+        payload = build_state_snapshot(keys=selected_keys, include_all=all_keys)
+    if not payload and selected_keys:
+        print(
+            json.dumps(
+                {
+                    "error": "No valid state keys selected.",
+                    "available_keys": list_agent_state_keys(),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    if as_json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    print_debug_header("SNAPSHOT")
+    if not payload:
+        print("[dim]No state data found.[/dim]")
+        return
+    for state_key, value in payload.items():
+        if isinstance(value, str):
+            print(f"[green]{state_key}:[/green]")
+            print(value)
+            print("")
+        else:
+            print_debug_value(state_key, value, max_len=999999)
 
 
 def select_agent_tools() -> list[str]:
@@ -78,7 +173,8 @@ def prompt_provider_for_role(
     *,
     role_label: str,
     default_model: str | None = None,
-) -> tuple[str, str | None, str, str]:
+    default_temperature: float | None = None,
+) -> tuple[str, str | None, str, str, float]:
     print(f"\n[bold]{role_label} Provider[/bold]")
 
     provider_type = inquirer.select(
@@ -111,8 +207,16 @@ def prompt_provider_for_role(
         model = typer.prompt(f"{role_label} model")
     else:
         model = typer.prompt(f"{role_label} model", default=default_model)
+    if default_temperature is None:
+        temperature = typer.prompt(f"{role_label} temperature", type=float)
+    else:
+        temperature = typer.prompt(
+            f"{role_label} temperature",
+            type=float,
+            default=default_temperature,
+        )
 
-    return provider_type, base_url or None, api_key, model
+    return provider_type, base_url or None, api_key, model, temperature
 
 
 def create_agent() -> None:
@@ -129,24 +233,40 @@ def create_agent() -> None:
         decision_base_url,
         decision_api_key,
         decision_model,
+        decision_temperature,
     ) = prompt_provider_for_role(role_label="Decision Maker (Main)")
     (
-        sufficiency_provider_type,
-        sufficiency_base_url,
-        sufficiency_api_key,
-        sufficiency_model,
+        lite_provider_type,
+        lite_base_url,
+        lite_api_key,
+        lite_model,
+        lite_temperature,
     ) = prompt_provider_for_role(
-        role_label="Sufficiency Reviewer",
+        role_label="Lite (fast/cheap)",
         default_model=decision_model,
+        default_temperature=0.1,
     )
     (
-        validator_provider_type,
-        validator_base_url,
-        validator_api_key,
-        validator_model,
+        reviewer_provider_type,
+        reviewer_base_url,
+        reviewer_api_key,
+        reviewer_model,
+        reviewer_temperature,
     ) = prompt_provider_for_role(
-        role_label="Validator",
+        role_label="Reviewer",
         default_model=decision_model,
+        default_temperature=0.1,
+    )
+    (
+        writer_provider_type,
+        writer_base_url,
+        writer_api_key,
+        writer_model,
+        writer_temperature,
+    ) = prompt_provider_for_role(
+        role_label="Writer (Synthesis)",
+        default_model=decision_model,
+        default_temperature=0.7,
     )
 
     print_select_hint(multi=True)
@@ -162,14 +282,22 @@ def create_agent() -> None:
                 decision_base_url=decision_base_url,
                 decision_api_key=decision_api_key,
                 decision_model=decision_model,
-                sufficiency_provider_type=sufficiency_provider_type,
-                sufficiency_base_url=sufficiency_base_url,
-                sufficiency_api_key=sufficiency_api_key,
-                sufficiency_model=sufficiency_model,
-                validator_provider_type=validator_provider_type,
-                validator_base_url=validator_base_url,
-                validator_api_key=validator_api_key,
-                validator_model=validator_model,
+                decision_temperature=decision_temperature,
+                lite_provider_type=lite_provider_type,
+                lite_base_url=lite_base_url,
+                lite_api_key=lite_api_key,
+                lite_model=lite_model,
+                lite_temperature=lite_temperature,
+                reviewer_provider_type=reviewer_provider_type,
+                reviewer_base_url=reviewer_base_url,
+                reviewer_api_key=reviewer_api_key,
+                reviewer_model=reviewer_model,
+                reviewer_temperature=reviewer_temperature,
+                writer_provider_type=writer_provider_type,
+                writer_base_url=writer_base_url,
+                writer_api_key=writer_api_key,
+                writer_model=writer_model,
+                writer_temperature=writer_temperature,
                 selected_tools=selected_tools,
             )
         )
@@ -183,6 +311,8 @@ def create_agent() -> None:
     print(f"[dim]Tools:[/dim] {', '.join(config.tools) if config.tools else 'None'}")
     print(f"[dim]Saved to:[/dim] {path}")
     print(f"[yellow]Customize persona:[/yellow] {get_persona_path(config.agent_key)}")
+    print(f"[yellow]Customize skill:[/yellow] {get_skill_path(config.agent_key)}")
+    print(f"[yellow]Customize tools:[/yellow] {get_tools_path(config.agent_key)}")
 
 
 def list_agents_cmd() -> None:
@@ -198,14 +328,31 @@ def list_agents_cmd() -> None:
     for agent in agents:
         print(f"[bold cyan]{agent.agent_key}[/bold cyan] ({agent.name})")
         print(f"  [dim]ID:[/dim]    {agent.agent_id}")
-        print(f"  [dim]Decision model:[/dim]    {agent.provider.model}")
+        print(f"  [dim]Brain model:[/dim]    {agent.provider.model}")
+        print(f"  [dim]Brain temp:[/dim]     {agent.provider.temperature}")
         print(
-            f"  [dim]Sufficiency model:[/dim] "
-            f"{agent.sufficiency_provider.model if agent.sufficiency_provider else agent.provider.model}"
+            f"  [dim]Lite model:[/dim]     "
+            f"{agent.lite_provider.model if agent.lite_provider else agent.provider.model}"
         )
         print(
-            f"  [dim]Validator model:[/dim]   "
-            f"{agent.validator_provider.model if agent.validator_provider else agent.provider.model}"
+            f"  [dim]Lite temp:[/dim]      "
+            f"{agent.lite_provider.temperature if agent.lite_provider else agent.provider.temperature}"
+        )
+        print(
+            f"  [dim]Reviewer model:[/dim] "
+            f"{agent.reviewer_provider.model if agent.reviewer_provider else agent.provider.model}"
+        )
+        print(
+            f"  [dim]Reviewer temp:[/dim]  "
+            f"{agent.reviewer_provider.temperature if agent.reviewer_provider else agent.provider.temperature}"
+        )
+        print(
+            f"  [dim]Writer model:[/dim]   "
+            f"{agent.writer_provider.model if agent.writer_provider else agent.provider.model}"
+        )
+        print(
+            f"  [dim]Writer temp:[/dim]    "
+            f"{agent.writer_provider.temperature if agent.writer_provider else agent.provider.temperature}"
         )
 
         if agent.tools:
@@ -273,66 +420,223 @@ def run_agent_cmd(debug: bool = False) -> None:
         or "No final response generated."
     )
 
-    messages = result.get("messages", [])
-    llm_prompt_messages = result.get("llm_prompt_messages", [])
-
     if debug:
         print_debug_header("DEBUG Agent Config")
         print(f"Name: {agent.name}")
         print(f"Description: {agent.description}")
         print(f"Provider: {agent.provider.type}")
-        print(f"Decision model: {agent.provider.model}")
+        print(f"Brain model: {agent.provider.model}")
+        print(f"Brain temp: {agent.provider.temperature}")
         print(
-            "Sufficiency model: "
-            f"{agent.sufficiency_provider.model if agent.sufficiency_provider else agent.provider.model}"
+            "Lite model: "
+            f"{agent.lite_provider.model if agent.lite_provider else agent.provider.model}"
         )
         print(
-            "Validator model: "
-            f"{agent.validator_provider.model if agent.validator_provider else agent.provider.model}"
+            "Lite temp: "
+            f"{agent.lite_provider.temperature if agent.lite_provider else agent.provider.temperature}"
+        )
+        print(
+            "Reviewer model: "
+            f"{agent.reviewer_provider.model if agent.reviewer_provider else agent.provider.model}"
+        )
+        print(
+            "Reviewer temp: "
+            f"{agent.reviewer_provider.temperature if agent.reviewer_provider else agent.provider.temperature}"
+        )
+        print(
+            "Writer model: "
+            f"{agent.writer_provider.model if agent.writer_provider else agent.provider.model}"
+        )
+        print(
+            "Writer temp: "
+            f"{agent.writer_provider.temperature if agent.writer_provider else agent.provider.temperature}"
         )
         print(f"Tools: {agent.tools}")
 
-        print_debug_header("DEBUG Agent Decision")
-        print_debug_value("decision", result.get("decision"))
-        print_debug_value("phase", result.get("phase"))
-        print_debug_value("router_next", result.get("router_next"))
+        # print_debug_header("DEBUG Agent Decision")
+        # print_debug_value("decision", result.get("decision"))
+        # print_debug_value("phase", result.get("phase"))
+        # print_debug_value("router_next", result.get("router_next"))
 
-        print_debug_header("DEBUG Tool Result")
-        print_debug_value("execution_result", result.get("execution_result"))
-        print_debug_value("context_evidence", result.get("context_evidence"))
-        print_debug_value("source_manifest", result.get("source_manifest"))
-        print_debug_value("source_evidence", result.get("source_evidence"))
-        print_debug_value("artifact_plan", result.get("artifact_plan"))
-        print_debug_value("artifact_input", result.get("artifact_input"))
-        print_debug_value("artifact_result", result.get("artifact_result"))
+        # print_debug_header("DEBUG Tool Result")
+        # print_debug_value("tool_call_history", result.get("tool_call_history"), max_len=999999)
+        # print_debug_value("execution_result", result.get("execution_result"))
+        # print_debug_value("context_evidence", result.get("context_evidence"))
 
-        print_debug_header("DEBUG Validation Result")
-        print_debug_value("validation_result", result.get("validation_result"))
-        print_debug_value("failure_type", result.get("failure_type"))
-        print_debug_value("validation_report", result.get("validation_report"))
-
-        print_debug_messages(
-            "DEBUG Messages Sent (messages from solidcue/core/graph_node/decision_node.py)",
-            messages,
-            max_content_len=2500,
-            description=(
-                "Accumulated user, assistant, and tool transcript for this agent run, "
-                "shown in sequence."
-            ),
-        )
-        print_debug_messages(
-            "DEBUG Prompt Messages (llm_prompt_messages from solidcue/core/graph_node/decision_node.py)",
-            llm_prompt_messages,
-            max_content_len=6000,
-            description=(
-                "Latest decision-model prompt payload, including system instructions, "
-                "tool definitions, retry context, and the transcript above."
-            ),
-        )
+        # print_debug_header("DEBUG Validation Result")
+        # print_debug_value("validation_result", result.get("validation_result"))
+        # print_debug_value("failure_type", result.get("failure_type"))
+        # print_debug_value("validation_report", result.get("validation_report"))
+        _print_metric_usage_summary(result)
 
     print("\n[green]Response:[/green]")
     _render_user_facing_value(output, panel_multiline=False)
     print()
+
+
+def _print_metric_usage_summary(result: dict[str, Any]) -> None:
+    _NODE_EXECUTION_ORDER = [
+        "initialize",
+        "classifier",
+        "discovery",
+        "planning",
+        "decision",
+        "execution",
+        "reflection",
+        "synthesis",
+        "validation",
+        "validation_hhem",
+        "final_output",
+    ]
+    _node_order_index = {name: i for i, name in enumerate(_NODE_EXECUTION_ORDER)}
+
+    metric_key_to_node = {
+        "metric_classifier": "classifier",
+        "metric_discovery": "discovery",
+        "metric_planning": "planning",
+        "metric_decision": "decision",
+        "metric_reflection": "reflection",
+        "metric_synthesis": "synthesis",
+        "metric_validation": "validation",
+        "metric_validation_hhem": "validation_hhem",
+        "metric_final_output": "final_output",
+    }
+
+    aggregated_by_node: dict[str, dict[str, Any]] = {}
+    events = result.get("metric_usage_events")
+    if isinstance(events, list) and events:
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            node_name = str(event.get("node") or "").strip()
+            if not node_name:
+                continue
+            if node_name not in aggregated_by_node:
+                aggregated_by_node[node_name] = {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cached_tokens": 0,
+                    "estimated_total": 0,
+                    "estimated_system": 0,
+                    "estimated_user": 0,
+                    "estimated_assistant": 0,
+                    "llm_call_count": 0,
+                    "message_count": 0,
+                    "time_s": 0.0,
+                    "models": set(),
+                    "methods": set(),
+                }
+            acc = aggregated_by_node[node_name]
+            acc["prompt_tokens"] += int(event.get("prompt_tokens") or 0)
+            acc["completion_tokens"] += int(event.get("completion_tokens") or 0)
+            acc["total_tokens"] += int(event.get("total_tokens") or 0)
+            acc["cached_tokens"] += int(event.get("cached_tokens") or 0)
+            acc["estimated_total"] += int(event.get("estimated_total") or 0)
+            acc["estimated_system"] += int(event.get("estimated_system") or 0)
+            acc["estimated_user"] += int(event.get("estimated_user") or 0)
+            acc["estimated_assistant"] += int(event.get("estimated_assistant") or 0)
+            acc["llm_call_count"] += int(event.get("llm_call_count") or 0)
+            acc["message_count"] += int(event.get("message_count") or 0)
+            acc["time_s"] += float(event.get("time_s") or 0.0)
+            model = str(event.get("model") or "").strip()
+            if model:
+                acc["models"].add(model)
+            method = str(event.get("method") or "").strip()
+            if method:
+                acc["methods"].add(method)
+
+    rows: list[tuple[str, dict[str, Any]]] = []
+    if aggregated_by_node:
+        rows = sorted(
+            aggregated_by_node.items(),
+            key=lambda item: _node_order_index.get(item[0], 999),
+        )
+    else:
+        for metric_key, node_name in metric_key_to_node.items():
+            payload = result.get(metric_key)
+            if isinstance(payload, dict) and payload:
+                token_payload = payload.get("tokens")
+                if isinstance(token_payload, dict):
+                    merged_payload = dict(token_payload)
+                    merged_payload["time_s"] = float(payload.get("time_s") or 0.0)
+                    merged_payload["model"] = str(payload.get("model") or "")
+                    rows.append((node_name, merged_payload))
+
+    print_debug_header("DEBUG Metric Summary")
+    if not rows:
+        print("[dim]No token usage data found in final state.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold bright_white")
+    table.add_column("Node", style="cyan")
+    table.add_column("Model", style="magenta")
+    table.add_column("Token Source", style="yellow")
+    table.add_column("Prompt", justify="right")
+    table.add_column("Completion", justify="right")
+    table.add_column("Total", justify="right")
+    table.add_column("Cached", justify="right")
+    table.add_column("Calls", justify="right")
+    table.add_column("Messages", justify="right")
+    table.add_column("Time (s)", justify="right")
+
+    grand_total = 0
+    for node_name, payload in rows:
+        prompt_tokens = int(payload.get("prompt_tokens") or 0)
+        completion_tokens = int(payload.get("completion_tokens") or 0)
+        total_tokens = int(payload.get("total_tokens") or 0)
+        cached_tokens = int(payload.get("cached_tokens") or 0)
+        llm_call_count = int(
+            payload.get("llm_call_count")
+            or (1 if total_tokens > 0 or int(payload.get("estimated_total") or 0) > 0 else 0)
+        )
+        message_count = int(payload.get("message_count") or 0)
+        time_s = float(payload.get("time_s") or 0.0)
+        models = payload.get("models")
+        if isinstance(models, set):
+            model = ", ".join(sorted(models)) if models else "-"
+        else:
+            model = str(payload.get("model") or "-")
+        methods = payload.get("methods")
+        if isinstance(methods, set):
+            if "provider_reported" in methods:
+                source = "provider_reported"
+            elif methods:
+                source = ",".join(sorted(methods))
+            else:
+                source = "-"
+        else:
+            method = str(payload.get("method") or "").strip()
+            source = method if method else "-"
+        grand_total += total_tokens
+        table.add_row(
+            node_name,
+            model,
+            source,
+            str(prompt_tokens),
+            str(completion_tokens),
+            str(total_tokens),
+            str(cached_tokens),
+            str(llm_call_count),
+            str(message_count),
+            f"{time_s:.3f}",
+        )
+
+    table.add_section()
+    total_time_s = sum(float(payload.get("time_s") or 0.0) for _, payload in rows)
+    table.add_row(
+        "TOTAL",
+        "-",
+        "-",
+        "-",
+        "-",
+        str(grand_total),
+        "-",
+        "-",
+        "-",
+        f"{total_time_s:.3f}",
+    )
+    console.print(table)
 
 
 def _extract_interrupt_payload(result: Any) -> dict[str, Any] | None:

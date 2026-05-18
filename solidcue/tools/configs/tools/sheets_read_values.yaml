@@ -1,0 +1,26 @@
+tool_key: sheets_read_values
+name: Sheets Read Values
+description: Read a spreadsheet range in A1 notation and return only cell values as
+  a 2D array.
+type: mcp
+enabled: true
+approval_mode: never
+approval_risk: low
+approval_prompt: null
+mcp:
+  server_key: google_drive
+  tool_name: sheets_read_values
+  input_schema:
+    properties:
+      spreadsheet_id:
+        title: Spreadsheet Id
+        type: string
+      range_name:
+        title: Range Name
+        type: string
+    required:
+    - spreadsheet_id
+    - range_name
+    title: sheets_read_valuesArguments
+    type: object
+api: null
