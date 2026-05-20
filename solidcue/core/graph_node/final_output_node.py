@@ -75,25 +75,46 @@ def _build_fallback_output(state: AgentState) -> str:
     return "I couldn't generate a final response for this request."
 
 
+def _compact_successful_tool_history(state: AgentState, max_entries: int = 8) -> list[dict[str, Any]]:
+    history = state.get("tool_call_history")
+    if not isinstance(history, list) or not history:
+        return []
+
+    successful_entries: list[dict[str, Any]] = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        execution_result = entry.get("execution_result")
+        if not isinstance(execution_result, dict) or execution_result.get("success") is not True:
+            continue
+
+        successful_entries.append(
+            {
+                "task_id": entry.get("task_id"),
+                "tool_name": entry.get("tool_name"),
+                "tool_input": entry.get("tool_input") if isinstance(entry.get("tool_input"), dict) else {},
+                "accomplishments": entry.get("accomplishments") if isinstance(entry.get("accomplishments"), list) else [],
+                "content": execution_result.get("content"),
+            }
+        )
+
+    if len(successful_entries) <= max_entries:
+        return successful_entries
+    return successful_entries[-max_entries:]
+
+
 def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict[str, Any]]:
     agent_key = state.get("agent_key")
     if not isinstance(agent_key, str) or not agent_key:
         return None, {}
 
-    execution_result = state.get("execution_result")
-    if not isinstance(execution_result, dict):
+    successful_tool_history = _compact_successful_tool_history(state)
+    if not successful_tool_history:
         return None, {}
-
-    last_tool_call = state.get("active_tool_call")
-    if not isinstance(last_tool_call, dict):
-        decision = state.get("decision")
-        last_tool_call = decision if isinstance(decision, dict) else {}
 
     payload = {
         "user_input": str(state.get("user_input") or ""),
-        "tool_name": last_tool_call.get("tool_name"),
-        "tool_input": last_tool_call.get("tool_input") if isinstance(last_tool_call.get("tool_input"), dict) else {},
-        "execution_result": execution_result,
+        "successful_tool_calls": successful_tool_history,
     }
 
     try:

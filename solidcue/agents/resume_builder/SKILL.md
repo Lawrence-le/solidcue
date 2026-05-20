@@ -117,7 +117,7 @@ Every placeholder below (wrapped in {{ }}) MUST be replaced with real data from 
 Always start the first line with `#` (H1)
 
 ```
-# {{full_name}} | {{profile_role}}
+# {{full_name}} | AI Engineer
 {{location}} | {{phone}} | {{email}}
 Portfolio: {{portfolio_url}}
 LinkedIn: {{linkedin_url}} | GitHub: {{github_url}}
@@ -193,24 +193,26 @@ When a resume is generated for an application, update:
 
 - `resume_agent/job_tracker/ai_job_tracker`
 
-Add one row with:
+Add a new row after the existing row with:
 
 - Date Applied: Date of this task is created
 - Application Status: Default as Drafting
 - Company: The company names stated in JD
 - Role Title: The role stated in JD
 - Posting: The JD link provided by user
-- Source: The source of the JD (eg: LinkedIn)
+- Source: Using the JD link determine the source. if http://www.linkedin.... this is Linkedin. If http://www.unknown... this is Company Website. Only use these values [Linkedin, Company Website, JobStreet, Indeed]
 - Resume URL: url of the generated resume
 - Location: Location of the posted job (eg: Singapore, Hong Kong)
-- Work Arrangement: [On Site, Work From Home, Hybrid] get this value from JD. If not listed in JD, default to On Site
+- Work Arrangement: [On Site, Remote, Hybrid] get this value from JD. If not listed in JD, default to On Site
 - Salary Range: Get information from JD if listed
 - Interview Stage: Leave Blank
 - Last Updated: Leave Blank
 - Next Follow Up Date: Leave Blank
 - Recruiter Name: Leave Blank
 - Recruiter Contact: Leave Blank
+- Application Portal: Leave Blank
 - Notes: Leave Blank
 - Outcome: Leave Blank
 
 Never claim tracker updates succeeded unless the tool returns success.
+Never replace any existing row in the spreadsheet.
