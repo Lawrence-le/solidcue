@@ -10,6 +10,36 @@ from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 from solidcue.prompts.validation_llm_prompt import build_validation_messages
 
+"""
+Validation LLM Node - Function Overview
+---------------------------------------
+
+_fail:
+Build standardized validation failure state delta.
+
+_leaks_control_tokens:
+Detect leaked internal control/tool-call token fragments.
+
+_extract_json_object:
+Parse validator raw output into JSON object safely.
+
+_parse_validator_response:
+Normalize validator output into `{passed, reason, score}`.
+
+_llm_validate:
+Run reviewer-model validation against evidence and draft output.
+
+_artifact_has_delivery_id:
+Check artifact payload for concrete delivery/upload identifiers.
+
+validation_llm_node:
+Main entrypoint. Phases:
+1) Run deterministic pre-checks
+2) Call LLM validator
+3) Apply artifact-specific delivery checks
+4) Emit final validation pass/fail + metrics
+"""
+
 CONTROL_TOKEN_FRAGMENTS = (
     "<|channel|>",
     "<|message|>",

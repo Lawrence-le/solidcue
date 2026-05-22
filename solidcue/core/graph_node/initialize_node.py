@@ -9,6 +9,17 @@ from solidcue.services.hhem_service import load_hhem_model
 from solidcue.core.state.schema import AgentState
 from solidcue.utils.env import get_env_path
 
+"""
+Initialize Node - Function Overview
+-----------------------------------
+
+_is_truthy:
+Interpret env toggles.
+
+initialize_node:
+Bootstrap missing state defaults (metadata, retry counters, phase, timestamps).
+"""
+
 
 load_dotenv(dotenv_path=get_env_path())
 
@@ -19,8 +30,10 @@ def _is_truthy(value: str | None) -> bool:
 
 def initialize_node(state: AgentState) -> dict[str, Any]:
     """Initialize missing state fields with safe defaults."""
+    # Phase 1: optional warmup/preload.
     if _is_truthy(os.getenv("SOLIDCUE_HHEM_PRELOAD")):
         load_hhem_model()
+    # Phase 2: resolve timezone + metadata defaults.
     metadata = dict(state.get("metadata", {}))
     config = state.get("config")
     config_dict = config if isinstance(config, dict) else {}
@@ -52,6 +65,7 @@ def initialize_node(state: AgentState) -> dict[str, Any]:
     if "current_time_utc" not in metadata:
         metadata["current_time_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
+    # Phase 3: normalize retry limits and core runtime fields.
     raw_max_retries = state.get("max_retries")
     max_retries = raw_max_retries if isinstance(raw_max_retries, int) and raw_max_retries >= 0 else 3
 

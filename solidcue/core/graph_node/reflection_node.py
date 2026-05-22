@@ -10,6 +10,32 @@ from solidcue.prompts.reflection_prompt import build_reflection_messages
 
 logger = logging.getLogger(__name__)
 
+"""
+Reflection Node - Function Overview
+-----------------------------------
+
+_llm_check_requires_met:
+LLM-based semantic check for requirement satisfaction.
+
+_check_requires_satisfied:
+Hybrid requirement checker (deterministic pass + optional LLM fallback).
+
+_update_tool_call_history_with_accomplishments:
+Attach met/missing accomplishments to the latest task history entry.
+
+_merge_token_stats:
+Merge token usage/time/model stats from sub-steps.
+
+_evidence_signature / _append_context_evidence:
+Deduplicate and append evidence entries into `context_evidence`.
+
+_has_substantial_text / _effective_evidence_role:
+Determine whether content is useful and classify evidence role.
+
+Main entrypoint:
+- `reflection_node`: resolve task requires, evaluate met/missing, update state.
+"""
+
 
 def _llm_check_requires_met(
     requires: list[str],

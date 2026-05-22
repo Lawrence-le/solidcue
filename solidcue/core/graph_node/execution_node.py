@@ -13,6 +13,45 @@ from solidcue.core.state.schema import AgentState
 from solidcue.tools.loader import load_mcp_server, load_tool
 from solidcue.tools.mcp.client import MCPClient
 
+"""
+Execution Node - Function Overview
+----------------------------------
+
+_is_valid_base64:
+Validate candidate base64 payloads safely.
+
+_get_current_task / _get_item_key_from_task:
+Resolve current task and optional item scope.
+
+_write_handoff:
+Persist successful task output into handoff (base + item-scoped key).
+
+_needs_handoff_fill / _is_truncated_copy / _fill_from_handoff:
+Determine when and how handoff payload values should replace tool arguments.
+
+_is_artifact_generation_task / _handoff_for_item:
+Artifact-phase detection and item-scoped handoff view selection.
+
+_execution_result / _record_tool_call:
+Normalize execution payload and append tool-call history entries.
+
+_is_text_mime_type / _decode_text_bytes / _decode_file_content:
+Decode file-like tool outputs into text-friendly structures when applicable.
+
+_is_web_content / _HTMLTextExtractor / _strip_html / _clean_text / _clean_content:
+Detect and clean scraped web content before it reaches synthesis.
+
+_execute_tool:
+Main execution worker: validate, hydrate args, call MCP tool, normalize output.
+
+execution_node:
+Main orchestration entrypoint. Phases:
+1) Read/validate active tool call + current task context
+2) Resolve tool + hydrate arguments from item-scoped handoff
+3) Execute MCP tool and normalize/clean returned payload
+4) Record history, write handoff outputs, and increment tool turn count
+"""
+
 
 TEXT_EXPORT_MIME_TYPES = {
     "application/json",
@@ -460,6 +499,7 @@ def _clean_content(content: Any) -> Any:
 
 
 def _execute_tool(state: AgentState) -> dict[str, Any]:
+    # Phase 1: read validated decision payload.
     decision = cast(dict[str, Any], state.get("active_tool_call") or {})
 
     action = decision.get("action")
@@ -478,6 +518,7 @@ def _execute_tool(state: AgentState) -> dict[str, Any]:
     raw_arguments = decision.get("tool_input")
     arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
 
+    # Phase 2: enrich arguments from handoff (item-scoped when available).
     handoff = state.get("handoff")
     if isinstance(handoff, dict) and handoff:
         try:
@@ -510,6 +551,7 @@ def _execute_tool(state: AgentState) -> dict[str, Any]:
         }
 
     try:
+        # Phase 3: authorize and execute selected MCP tool.
         agent = load_agent(agent_key)
         if tool_key not in set(agent.tools or []):
             raise ValueError(f"Tool '{tool_key}' not allowed for agent '{agent_key}'")
@@ -549,6 +591,7 @@ def _execute_tool(state: AgentState) -> dict[str, Any]:
         return update
 
     except Exception as exc:
+        # Phase 4: standardize execution failure shape.
         error_text = str(exc)
         if "Unable to reach MCP server" in error_text:
             error_text = f"{error_text}. Check that the MCP service is running and reachable."

@@ -8,6 +8,27 @@ from solidcue.core.execution.provider_resolver import get_provider_for_role
 from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 
+"""
+Discovery Node - Function Overview
+----------------------------------
+
+_extract_json_object:
+Parse discovery/model JSON payloads robustly.
+
+_extract_paths_with_llm:
+Extract path/filename hints from SKILL/TOOLS guidance.
+
+discovery_node:
+Main entrypoint. Phases:
+1) Load skill/tools guidance
+2) Discover path hints
+3) Return metadata additions for downstream prompts
+"""
+
+# ---------------------------------------------------------------------------
+# Section: parser helper
+# ---------------------------------------------------------------------------
+
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     stripped = (text or "").strip()
@@ -32,6 +53,10 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
         return None
     return parsed if isinstance(parsed, dict) else None
 
+
+# ---------------------------------------------------------------------------
+# Section: LLM extraction helper
+# ---------------------------------------------------------------------------
 
 def _extract_paths_with_llm(
     agent_key: str,
@@ -117,7 +142,13 @@ def _extract_paths_with_llm(
     return source_paths, output_paths, source_filenames, output_filenames, metric_discovery
 
 
+# ---------------------------------------------------------------------------
+# Section: core node
+# ---------------------------------------------------------------------------
+
+
 def discovery_node(state: AgentState) -> dict[str, Any]:
+    # Phase 1: validate required state.
     agent_key = state.get("agent_key")
     if not isinstance(agent_key, str) or not agent_key:
         return {
@@ -128,6 +159,7 @@ def discovery_node(state: AgentState) -> dict[str, Any]:
             "metric_discovery": {},
         }
 
+    # Phase 2: load agent static guidance (best effort).
     try:
         skill_text = load_agent_skill(agent_key)
     except Exception:
@@ -137,11 +169,13 @@ def discovery_node(state: AgentState) -> dict[str, Any]:
     except Exception:
         tools_text = ""
 
+    # Phase 3: extract path hints using discovery model call.
     source_paths, output_paths, source_filenames, output_filenames, metric_discovery = _extract_paths_with_llm(
         agent_key,
         skill_text,
         tools_text,
     )
+    # Phase 4: merge discovery artifacts into metadata.
     metadata = dict(state.get("metadata", {}))
     metadata["source_paths"] = source_paths
     metadata["output_paths"] = output_paths

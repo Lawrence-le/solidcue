@@ -12,6 +12,45 @@ from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric, build_metric_state_delta, timed_generate
 from solidcue.prompts.validation_hhem_prompt import build_hhem_verify_messages
 
+"""
+Validation HHEM Node - Function Overview
+----------------------------------------
+
+_positive_int_env:
+Read positive integer env override with safe defaulting.
+
+_split_claims:
+Split hypothesis text into bounded claim list for scoring.
+
+_chunk_premise:
+Split long premise into bounded chunks for retrieval/scoring.
+
+_tokens:
+Tokenize text for lexical-overlap chunk ranking.
+
+_select_relevant_chunks:
+Pick top relevant premise chunks for a specific claim.
+
+_build_verifier_premise:
+Assemble compact verifier premise from failed claims and selected chunks.
+
+_score_groundedness:
+Run HHEM claim-level groundedness scoring and aggregate metrics.
+
+_build_premise:
+Construct validation premise from context evidence and execution content.
+
+_llm_verify_failures:
+Optional reviewer-model verification for uncertain/failed claims.
+
+validation_hhem_node:
+Main entrypoint. Phases:
+1) Build premise + claims
+2) Score groundedness with HHEM
+3) Optionally verify failures with reviewer LLM
+4) Emit pass/fail validation report + metrics
+"""
+
 SCORE_THRESHOLD = 0.5
 
 PREMISE_CHUNK_CHARS = 1200

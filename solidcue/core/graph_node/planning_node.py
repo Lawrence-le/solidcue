@@ -1,9 +1,3 @@
-"""Task planning node: decomposes user requests into concrete steps.
-
-Phase 3 enhancement: Takes a user query and generates a structured task plan
-to guide multi-step workflows. Each task has a type, description, and status.
-"""
-
 import json
 import hashlib
 import logging
@@ -41,6 +35,61 @@ _ALIGNMENT_HINTS = (
     "rubric",
     "target",
 )
+
+"""
+Planning Node - Function Overview
+---------------------------------
+
+_extract_json_object:
+Safely parse JSON object from planner LLM output, even when wrapped in prose.
+
+_llm_plan:
+Request raw task list from planner model.
+
+_fallback_task_plan:
+Create deterministic fallback tasks when model planning fails.
+
+_guardrail_renumber_task_ids:
+Normalize task IDs into sequential `task_N`.
+
+_item_key_from_url:
+Generate stable per-item key from URL hash.
+
+_guardrail_assign_item_keys:
+Ensure every task has `context.item_key` for item-scoped downstream execution.
+
+_slug:
+Convert free-form text into snake_case-safe token.
+
+_normalize_requires_for_task:
+Normalize/validate `requires` labels with safe defaults by task type.
+
+_infer_evidence_role:
+Infer evidence intent (`grounding`, `alignment`, `context`) for source tasks.
+
+_guardrail_normalize_task_shape:
+Coerce planner output into canonical runtime task shape.
+
+_apply_planning_guardrails:
+Pipeline wrapper: normalize shape -> renumber IDs -> assign item keys.
+
+_build_task_plan_from_input:
+Select planning source path (empty-input default vs LLM/fallback).
+
+_conversational_response:
+Handle classifier-routed conversational path without task planning.
+
+planning_node:
+Main entrypoint. Phases:
+1) Conversational short-circuit
+2) Build raw task plan
+3) Apply guardrails
+4) Return normalized plan + metrics
+"""
+
+# ---------------------------------------------------------------------------
+# Section: parser + LLM planning
+# ---------------------------------------------------------------------------
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -140,6 +189,10 @@ def _fallback_task_plan(state: AgentState) -> list[dict[str, Any]]:
     return tasks
 
 
+# ---------------------------------------------------------------------------
+# Section: task-id + item-key helpers
+# ---------------------------------------------------------------------------
+
 def _guardrail_renumber_task_ids(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ensure task IDs are strictly sequential using task_N format."""
     normalized: list[dict[str, Any]] = []
@@ -161,12 +214,13 @@ def _guardrail_assign_item_keys(tasks: list[dict[str, Any]]) -> list[dict[str, A
     Priority:
     1) Keep explicit context.item_key if present.
     2) Derive from URL-like context fields (stable hash key).
-    3) Reuse single discovered key for non-URL tasks in the same plan.
+    3) Inherit the most recent URL-derived/explicit key for adjacent non-URL tasks.
     4) Fallback to deterministic sequence key.
     """
     url_fields = ("posting_url", "url", "jd_url", "job_url")
     url_to_item: dict[str, str] = {}
     discovered_keys: list[str] = []
+    current_item_key: str | None = None
     fallback_counter = 0
     normalized: list[dict[str, Any]] = []
 
@@ -190,6 +244,9 @@ def _guardrail_assign_item_keys(tasks: list[dict[str, Any]]) -> list[dict[str, A
                 item_key = url_to_item.get(matched_url) or _item_key_from_url(matched_url)
                 url_to_item[matched_url] = item_key
 
+        if not item_key and current_item_key:
+            item_key = current_item_key
+
         if not item_key and len(discovered_keys) == 1:
             item_key = discovered_keys[0]
 
@@ -199,6 +256,7 @@ def _guardrail_assign_item_keys(tasks: list[dict[str, Any]]) -> list[dict[str, A
 
         if item_key not in discovered_keys:
             discovered_keys.append(item_key)
+        current_item_key = item_key
 
         task_context["item_key"] = item_key
         normalized.append({**task, "context": task_context})
@@ -210,6 +268,10 @@ def _slug(text: str) -> str:
     value = re.sub(r"[^a-z0-9]+", "_", str(text).casefold()).strip("_")
     return value or "item"
 
+
+# ---------------------------------------------------------------------------
+# Section: task-shape normalization helpers
+# ---------------------------------------------------------------------------
 
 def _normalize_requires_for_task(task_type: str, requires: Any) -> list[str]:
     items = [str(x).strip() for x in requires] if isinstance(requires, list) else []
@@ -299,6 +361,10 @@ def _guardrail_normalize_task_shape(tasks: list[dict[str, Any]]) -> list[dict[st
     return normalized
 
 
+# ---------------------------------------------------------------------------
+# Section: planning pipeline helpers
+# ---------------------------------------------------------------------------
+
 def _apply_planning_guardrails(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalize planner output into canonical runtime shape.
 
@@ -335,6 +401,10 @@ def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str, Any]]
         task_plan = _fallback_task_plan(state)
     return task_plan, metric_planning
 
+
+# ---------------------------------------------------------------------------
+# Section: conversational mode
+# ---------------------------------------------------------------------------
 
 def _conversational_response(state: AgentState) -> dict[str, Any]:
     agent_key = state.get("agent_key")
@@ -374,6 +444,10 @@ def _conversational_response(state: AgentState) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Section: core node
+# ---------------------------------------------------------------------------
+
 def planning_node(state: AgentState) -> dict[str, Any]:
     """Generate a task plan from user input, or answer conversational questions.
 
@@ -381,12 +455,16 @@ def planning_node(state: AgentState) -> dict[str, Any]:
     question using skill and tools context. Otherwise decomposes the request
     into a structured task plan.
     """
+    # Phase 1: conversational short-circuit.
     if state.get("phase") == "conversational":
         return _conversational_response(state)
 
+    # Phase 2: build raw task plan from input/model.
     raw_task_plan, metric_planning = _build_task_plan_from_input(state)
+    # Phase 3: normalize plan into canonical runtime shape.
     task_plan = _apply_planning_guardrails(raw_task_plan)
 
+    # Phase 4: finalize planning state for downstream nodes.
     first_task_id = task_plan[0]["id"] if task_plan else "task_1"
     return {
         "task_plan": task_plan,

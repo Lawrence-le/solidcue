@@ -11,6 +11,56 @@ from solidcue.core.graph_node.validation_llm_node import _artifact_has_delivery_
 
 logger = logging.getLogger(__name__)
 
+"""
+Router Node - Function Overview
+-------------------------------
+
+_get_latest_execution_result:
+Read latest execution result from `tool_call_history` (fallback to state field).
+
+_guardrail_is_artifact_intent:
+Detect artifact-oriented user intent from input keywords.
+
+_guardrail_retry_limit_reached:
+Enforce global retry-attempt budget across phases.
+
+_guardrail_artifact_required_retry:
+Detect validator-enforced artifact retry from validation report.
+
+_guardrail_next_artifact_task_id:
+Find next artifact task id at/after current task pointer.
+
+_guardrail_latest_task_failure_detail:
+Extract latest failure detail for the current task from history.
+
+_guardrail_tools_tried_for_task:
+Collect unique tools already attempted for a specific task.
+
+_guardrail_build_retry_reason:
+Build structured retry reason text for artifact retries.
+
+_guardrail_task_position_label:
+Render human-readable "task X of Y" position label.
+
+_check_task_completion_by_accomplishments:
+Determine whether a task is complete by accomplishment tags and execution status.
+
+_guardrail_phase_for_task_type:
+Map task type -> phase name.
+
+_guardrail_router_next_for_task_type:
+Map task type -> next node for router.
+
+_guardrail_advance_task_plan:
+Advance task pointer and compute phase/router transitions safely.
+
+router_node:
+Main entrypoint. Phases:
+1) Evaluate guardrails/retry constraints
+2) Advance or retain current task state
+3) Route to next node with phase metadata
+"""
+
 ARTIFACT_INTENT_KEYWORDS = (
     "document",
     "google doc",

@@ -14,6 +14,39 @@ from solidcue.tools.loader import load_tool, get_missing_required_tool_fields, s
 
 logger = logging.getLogger(__name__)
 
+"""
+Decision Node - Function Overview
+---------------------------------
+
+DecisionValidator.validate:
+Validate and normalize model decision payloads into ToolCallState.
+
+DecisionValidator.as_fallback_response:
+Build safe `respond` fallback decision when validation fails.
+
+DecisionValidator._blocking_missing_required_fields:
+Compute missing required tool fields that block execution.
+
+_get_decision_payload:
+Parse model output into a decision dict, including double-wrap recovery.
+
+_extract_json_candidate:
+Extract first valid decision-like JSON object from noisy text output.
+
+_apply_neutral_decision_fallback:
+Ensure respond decisions always contain a non-empty thought.
+
+_resolve_available_tool_name:
+Resolve/validate requested tool name against allowed tools.
+
+decision_node:
+Main orchestration entrypoint. Phases:
+1) Build task-scoped prompt context
+2) Resolve provider and run decision model
+3) Parse output and validate/normalize ToolCallState
+4) Persist active_tool_call and emit execution-ready state delta
+"""
+
 
 # --- Hardened Validation Layer ---
 

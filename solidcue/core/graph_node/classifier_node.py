@@ -10,6 +10,24 @@ from solidcue.prompts.classifier_prompt import build_classifier_messages
 
 logger = logging.getLogger(__name__)
 
+"""
+Classifier Node - Function Overview
+-----------------------------------
+
+_extract_json_object:
+Parse classifier LLM output into a JSON dict safely.
+
+classifier_node:
+Main entrypoint. Phases:
+1) Validate input/agent context
+2) Run intent classifier prompt
+3) Route to conversational flow or planning flow
+"""
+
+# ---------------------------------------------------------------------------
+# Section: parser helper
+# ---------------------------------------------------------------------------
+
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     raw = (text or "").strip()
@@ -31,7 +49,12 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+# ---------------------------------------------------------------------------
+# Section: core node
+# ---------------------------------------------------------------------------
+
 def classifier_node(state: AgentState) -> dict[str, Any]:
+    # Phase 1: validate required state.
     agent_key = state.get("agent_key")
     if not isinstance(agent_key, str) or not agent_key:
         return {}
@@ -41,6 +64,7 @@ def classifier_node(state: AgentState) -> dict[str, Any]:
         return {"phase": "conversational", "router_next": "final_output", "final_response": ""}
 
     agent = load_agent(agent_key)
+    # Phase 2: build classifier prompt and infer intent.
     messages = build_classifier_messages(
         user_input=user_input,
         persona=load_agent_persona(agent_key),
@@ -54,6 +78,7 @@ def classifier_node(state: AgentState) -> dict[str, Any]:
     parsed = _extract_json_object(str(response_text or ""))
     intent = parsed.get("intent") if isinstance(parsed, dict) else None
 
+    # Phase 3: route by classified intent.
     if intent == "greeting":
         return {
             "phase": "conversational",

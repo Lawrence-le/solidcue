@@ -8,6 +8,35 @@ from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 from solidcue.prompts.final_output_prompt import build_final_output_messages
 
+"""
+Final Output Node - Function Overview
+-------------------------------------
+
+_sanitize_error_text:
+Redact sensitive query-parameter values from error/content text.
+
+_parse_json_content:
+Parse JSON-like content strings into structured objects when possible.
+
+_summarize_tool_content:
+Build short human-readable summary of last tool result payload.
+
+_truncate_content_preview:
+Produce bounded preview text for large payloads.
+
+_build_fallback_output:
+Build deterministic fallback final response from execution/validation state.
+
+_compact_successful_tool_history:
+Compact recent successful tool calls into concise summary lines.
+
+_llm_compose_user_facing_output:
+Generate polished final response via model using current state context.
+
+final_output_node:
+Main entrypoint that chooses conversational fast-path, LLM output, or fallback.
+"""
+
 
 _SENSITIVE_QUERY_PARAM_RE = re.compile(r"([?&](?:api_key|key|token|access_token)=)[^&\s]+", re.IGNORECASE)
 _MAX_CONTENT_PREVIEW_CHARS = 1200
@@ -150,12 +179,15 @@ def final_output_node(state: AgentState) -> dict[str, Any]:
     Terminal node. Reads synthesis_draft (normal path) or falls back to
     fallback logic. Writes only final_response.
     """
+    # Phase 1: fast-path conversational responses.
     if state.get("phase") == "conversational":
         return {
             "final_response": state.get("final_response") or _build_fallback_output(state),
         }
 
+    # Phase 2: compose user-facing output via final-output model.
     llm_output, metric_final_output = _llm_compose_user_facing_output(state)
+    # Phase 3: fallback ordering when model output is unavailable.
     final_output = (
         llm_output
         or state.get("synthesis_draft")

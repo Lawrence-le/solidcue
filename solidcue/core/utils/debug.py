@@ -15,7 +15,7 @@ NODE_STATE_KEY_STYLE = "green"
 
 _SENSITIVE_QUERY_PARAM_RE = re.compile(r"([?&](?:api_key|key|token|access_token)=)[^&\s]+", re.IGNORECASE)
 _SENSITIVE_JSON_FIELD_RE = re.compile(
-    r'("?(?:api_key|key|token|access_token)"?\s*[:=]\s*")([^"]+)(")',
+    r'("?(?:api_key|access_token|token|secret|client_secret|refresh_token|authorization)"?\s*[:=]\s*")([^"]+)(")',
     re.IGNORECASE,
 )
 
