@@ -10,6 +10,7 @@ from solidcue.prompts.final_output_prompt import build_final_output_messages
 
 
 _SENSITIVE_QUERY_PARAM_RE = re.compile(r"([?&](?:api_key|key|token|access_token)=)[^&\s]+", re.IGNORECASE)
+_MAX_CONTENT_PREVIEW_CHARS = 1200
 
 
 def _sanitize_error_text(text: str) -> str:
@@ -46,6 +47,21 @@ def _summarize_tool_content(content: Any) -> str | None:
         return _sanitize_error_text(parsed.strip())
 
     return None
+
+
+def _truncate_content_preview(content: Any, max_chars: int = _MAX_CONTENT_PREVIEW_CHARS) -> str:
+    if isinstance(content, str):
+        text = content
+    else:
+        try:
+            text = json.dumps(content, ensure_ascii=True, default=str)
+        except Exception:
+            text = str(content)
+
+    text = _sanitize_error_text(text.strip())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}...[truncated]"
 
 
 def _build_fallback_output(state: AgentState) -> str:
@@ -94,7 +110,7 @@ def _compact_successful_tool_history(state: AgentState, max_entries: int = 8) ->
                 "tool_name": entry.get("tool_name"),
                 "tool_input": entry.get("tool_input") if isinstance(entry.get("tool_input"), dict) else {},
                 "accomplishments": entry.get("accomplishments") if isinstance(entry.get("accomplishments"), list) else [],
-                "content": execution_result.get("content"),
+                "content": _truncate_content_preview(execution_result.get("content")),
             }
         )
 

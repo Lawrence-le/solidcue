@@ -25,7 +25,7 @@ TEXT_EXPORT_MIME_TYPES = {
 def _is_valid_base64(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    stripped = value.strip()
+    stripped = re.sub(r"\s+", "", value)
     if not stripped:
         return False
     try:
@@ -41,6 +41,19 @@ def _get_current_task(state: AgentState) -> dict[str, Any] | None:
     if not isinstance(task_plan, list) or not current_task_id:
         return None
     return next((t for t in task_plan if isinstance(t, dict) and t.get("id") == current_task_id), None)
+
+
+def _get_item_key_from_task(task: dict[str, Any] | None) -> str | None:
+    if not isinstance(task, dict):
+        return None
+    context = task.get("context")
+    if not isinstance(context, dict):
+        return None
+    item_key = context.get("item_key")
+    if not isinstance(item_key, str):
+        return None
+    cleaned = item_key.strip()
+    return cleaned or None
 
 
 def _write_handoff(state: AgentState, execution_result: dict[str, Any]) -> dict[str, Any] | None:
@@ -59,12 +72,16 @@ def _write_handoff(state: AgentState, execution_result: dict[str, Any]) -> dict[
         return None
     handoff = dict(state.get("handoff") or {})
     handoff[requires_key] = content
+    item_key = _get_item_key_from_task(task)
+    if item_key:
+        handoff[f"{requires_key}::{item_key}"] = content
     return handoff
 
 
 _LARGE_PAYLOAD_FIELDS = {"content_base64", "content", "body", "text", "data"}
 _MIN_REAL_CONTENT_LENGTH = 200
 _TRUNCATION_MARKER = "… [truncated]"
+_TEXT_FALLBACK_FIELD_ORDER = ("content", "text", "body", "data")
 
 
 def _needs_handoff_fill(value: Any) -> bool:
@@ -104,6 +121,7 @@ def _fill_from_handoff(
     tool_params: set[str],
     handoff: dict[str, Any],
     excluded_keys: set[str] | None = None,
+    force_fill: bool = False,
 ) -> dict[str, Any]:
     """Inject large payload fields from the handoff into tool arguments.
 
@@ -111,6 +129,29 @@ def _fill_from_handoff(
     truncation placeholder, or is a truncated copy of the handoff value.
     When the LLM provides real content (e.g. synthesis_draft passed as
     document content), it is preserved.
+
+    Step-by-step behavior:
+    1) Determine which tool parameters are eligible for payload fill
+       (`tool_params` ∩ `_LARGE_PAYLOAD_FIELDS`).
+    2) Build candidate handoff sources from current handoff entries, skipping
+       any excluded keys (typically the current task's own output key).
+    3) For each eligible target field (e.g., `content`, `content_base64`):
+       - Read current argument value from `arguments[field]`.
+       - Decide whether replacement is needed via `_needs_handoff_fill(...)`.
+    4) Search candidate sources from newest to oldest:
+       - Candidate must be a dict and contain the exact same key name
+         (`field in dep`).
+       - Candidate value must be non-empty (and valid base64 for
+         `content_base64`).
+    5) Replace only when:
+       - current value is placeholder/too short/truncated marker, OR
+       - current value is a truncated prefix of the candidate
+         (`_is_truncated_copy(...)`).
+    6) Return merged arguments for tool execution.
+
+    Note:
+    - Matching is exact by key. For target `content`, this function reads
+      candidate `content`, not `text`/`body` aliases unless explicitly mapped.
     """
     fields_to_fill = tool_params & _LARGE_PAYLOAD_FIELDS
     if not fields_to_fill:
@@ -120,20 +161,48 @@ def _fill_from_handoff(
     candidate_sources: list[Any] = [
         value for key, value in handoff.items() if key not in blocked
     ]
+
+    def _resolve_candidate(dep: dict[str, Any], target_field: str) -> tuple[bool, Any]:
+        """Resolve candidate value from handoff entry for a target tool argument.
+
+        Returns:
+        - (True, value): source field resolved
+        - (False, None): no suitable source in this entry
+        """
+        # Exact key match remains highest priority.
+        if target_field in dep:
+            return True, dep[target_field]
+
+        # Text-like payload aliases for non-synthesis source flows:
+        # browser_get_html emits `text`, while document tools expect `content`.
+        if target_field in {"content", "text", "body", "data"}:
+            for source_field in _TEXT_FALLBACK_FIELD_ORDER:
+                if source_field in dep:
+                    return True, dep[source_field]
+
+        return False, None
+
     for field in fields_to_fill:
         current_value = merged.get(field)
         needs_fill = _needs_handoff_fill(current_value)
         for dep in reversed(candidate_sources):
-            if isinstance(dep, dict) and field in dep:
-                candidate = dep[field]
-                if field == "content_base64" and not _is_valid_base64(candidate):
+            if isinstance(dep, dict):
+                found, candidate = _resolve_candidate(dep, field)
+                if not found:
                     continue
+                if field == "content_base64":
+                    if not isinstance(candidate, str):
+                        continue
+                    normalized_b64 = re.sub(r"\s+", "", candidate)
+                    if not _is_valid_base64(normalized_b64):
+                        continue
+                    candidate = normalized_b64
                 if candidate is None:
                     continue
                 if isinstance(candidate, str) and not candidate.strip():
                     continue
                 # Fill if value is a placeholder OR a truncated copy of the handoff
-                if needs_fill or (
+                if force_fill or needs_fill or (
                     isinstance(current_value, str)
                     and isinstance(candidate, str)
                     and _is_truncated_copy(current_value, candidate)
@@ -141,6 +210,36 @@ def _fill_from_handoff(
                     merged[field] = candidate
                 break
     return merged
+
+
+def _is_artifact_generation_task(state: AgentState, task: dict[str, Any] | None) -> bool:
+    """True when current execution is in artifact-generation phase/task."""
+    phase = state.get("phase")
+    if isinstance(phase, str) and phase.lower() == "artifact":
+        return True
+
+    if isinstance(task, dict):
+        task_type = task.get("type")
+        if isinstance(task_type, str) and task_type.lower() == "artifact_generation":
+            return True
+        category = task.get("category")
+        if isinstance(category, str) and category.lower() == "artifact_generation":
+            return True
+
+    return False
+
+
+def _handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str, Any]:
+    """Prefer item-scoped handoff entries when an item_key is available.
+
+    Entries are scoped by suffix `::<item_key>`. If no scoped entries exist,
+    return the full handoff for backward-compatible behavior.
+    """
+    if not item_key:
+        return handoff
+    suffix = f"::{item_key}"
+    scoped = {k: v for k, v in handoff.items() if isinstance(k, str) and k.endswith(suffix)}
+    return scoped or handoff
 
 
 def _execution_result(success: bool, result_type: str, content: Any, error: Any) -> dict[str, Any]:
@@ -386,9 +485,17 @@ def _execute_tool(state: AgentState) -> dict[str, Any]:
             schema = getattr(getattr(tool_cfg, "mcp", None), "input_schema", None)
             tool_params = set(schema.get("properties", {}).keys()) if isinstance(schema, dict) else set()
             task = _get_current_task(state)
+            item_key = _get_item_key_from_task(task)
             requires = task.get("requires") if isinstance(task, dict) else None
             current_output_keys = {str(item) for item in requires if isinstance(item, str)} if isinstance(requires, list) else set()
-            arguments = _fill_from_handoff(arguments, tool_params, handoff, excluded_keys=current_output_keys)
+            handoff_view = _handoff_for_item(handoff, item_key)
+            arguments = _fill_from_handoff(
+                arguments,
+                tool_params,
+                handoff_view,
+                excluded_keys=current_output_keys,
+                force_fill=_is_artifact_generation_task(state, task),
+            )
         except Exception:
             pass
     agent_key = state.get("agent_key")

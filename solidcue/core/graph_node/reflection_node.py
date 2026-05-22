@@ -297,14 +297,26 @@ def _effective_evidence_role(role: str, tool_name: str | None, content: Any) -> 
 
 def reflection_node(state: AgentState) -> dict[str, Any]:
     """
-    Validates tool output against task requirements, cleans content, stores evidence.
-    - Reads task.requires to see what accomplishments are expected
-    - Checks if tool output actually satisfies those requires
-    - Marks accomplishments with _met or _not_met suffix
-    - Detects browser tool output and strips web page noise via LLM
-    - Updates tool_call_history with accomplishments
-    - Writes context_evidence
-    - Sets failure_type: missing_source if content is empty after cleaning
+    Evaluate the latest tool execution for the current task and write normalized state updates.
+
+    High-level flow:
+    - Read `execution_result`; if missing/failed, emit phase-aware `failure_type`
+      (`missing_source` for source phase, `bad_artifact` for artifact phase).
+    - Resolve current task from `task_plan` + `current_task`, then read `requires`
+      and planned tool (`context.tool`).
+    - Compute requirement accomplishments as `<requirement>_met` or
+      `<requirement>_missing`:
+      - Deterministic pass when planned tool succeeded.
+      - Otherwise LLM semantic check when needed.
+    - Attach accomplishments to the latest matching `tool_call_history` entry.
+    - For source phase only: append deduplicated `context_evidence` when content is
+      non-empty; otherwise set `failure_type="missing_source"`.
+    - For artifact phase: skip evidence storage and return after accomplishment/metric updates.
+
+    Returns:
+    - A partial state delta containing some combination of:
+      `failure_type`, `tool_call_history`, `context_evidence`, `metric_reflection`,
+      and `metric_usage_events`.
     """
     execution_result = state.get("execution_result")
     metric_reflection: dict[str, Any] = {}

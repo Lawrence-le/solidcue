@@ -129,12 +129,6 @@ def decision_node(state: AgentState) -> dict[str, Any]:
             metadata["current_task_id"] = current_task_id
             metadata["total_tasks"] = len(task_plan)
 
-    # Inject synthesis_draft in artifact phase so decision knows the content is ready
-    if phase == "artifact":
-        synthesis_draft = state.get("synthesis_draft")
-        if isinstance(synthesis_draft, str) and synthesis_draft.strip():
-            metadata["synthesis_draft"] = synthesis_draft
-
     tool_call_history = state.get("tool_call_history")
 
     # Show full context:

@@ -193,7 +193,7 @@ When a resume is generated for an application, update:
 
 - `resume_agent/job_tracker/ai_job_tracker`
 
-Add a new row after the existing row with:
+ADD a new row after the existing row with:
 
 - Date Applied: Date of this task is created
 - Application Status: Default as Drafting
@@ -204,7 +204,7 @@ Add a new row after the existing row with:
 - Resume URL: url of the generated resume
 - Location: Location of the posted job (eg: Singapore, Hong Kong)
 - Work Arrangement: [On Site, Remote, Hybrid] get this value from JD. If not listed in JD, default to On Site
-- Salary Range: Get information from JD if listed
+- Expected Salary: Leave Blank
 - Interview Stage: Leave Blank
 - Last Updated: Leave Blank
 - Next Follow Up Date: Leave Blank
@@ -215,4 +215,4 @@ Add a new row after the existing row with:
 - Outcome: Leave Blank
 
 Never claim tracker updates succeeded unless the tool returns success.
-Never replace any existing row in the spreadsheet.
+Never replace/delete any existing row in the spreadsheet.

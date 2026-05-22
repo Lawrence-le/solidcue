@@ -1,4 +1,4 @@
-from solidcue.core.graph_node.final_output_node import final_output_node
+from solidcue.core.graph_node.final_output_node import _compact_successful_tool_history, final_output_node
 
 
 _DISALLOWED_FINAL_OUTPUT_WRITES = (
@@ -64,3 +64,26 @@ def test_final_output_uses_fallback_on_execution_failure() -> None:
     )
 
     assert "couldn't retrieve enough reliable information" in result["final_response"]
+
+
+def test_compact_successful_tool_history_truncates_large_content() -> None:
+    large_content = "x" * 5000
+    history = _compact_successful_tool_history(
+        {
+            "tool_call_history": [
+                {
+                    "task_id": "task_1",
+                    "tool_name": "search_web",
+                    "tool_input": {"query": "q"},
+                    "accomplishments": ["facts_met"],
+                    "execution_result": {"success": True, "content": large_content},
+                }
+            ]
+        }
+    )
+
+    assert len(history) == 1
+    content = history[0]["content"]
+    assert isinstance(content, str)
+    assert len(content) < len(large_content)
+    assert content.endswith("...[truncated]")

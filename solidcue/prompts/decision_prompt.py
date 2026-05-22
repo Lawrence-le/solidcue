@@ -308,10 +308,9 @@ def _append_run_state_overrides(
     current_task_type: str,
     retry_reason: str | None,
 ) -> str:
-    synthesis_draft = meta.get("synthesis_draft")
-    if isinstance(synthesis_draft, str) and synthesis_draft.strip() and current_task_type == "artifact_generation":
+    if current_task_type == "artifact_generation":
         system_prompt += (
-            "\n\nSynthesis content is READY. Call the artifact tool now. "
+            "\n\nArtifact content is READY via handoff. Call the artifact tool now. "
             "For the content parameter, use the exact string: [payload via handoff] "
             "— the execution layer will replace it with the real content. "
             "Do NOT fetch or list source files again."

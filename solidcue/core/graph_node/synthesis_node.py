@@ -11,7 +11,51 @@ from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 from solidcue.prompts.synthesis_prompt import build_synthesis_messages
 
-# --- RESILIENT DATA EXTRACTION UTILITIES ---
+"""
+Synthesis Node - Function Overview
+----------------------------------
+
+_is_noise_key:
+Filters low-value metadata keys from tool payloads.
+
+_extract_meaningful_content:
+Recursively removes noise and flattens simple dict wrappers.
+
+_get_current_task:
+Resolves current task from state.task_plan + state.current_task.
+
+_get_item_key_from_task:
+Reads context.item_key from current task (if present).
+
+_handoff_for_item:
+Builds an item-scoped handoff view using `::<item_key>` suffix keys.
+
+_build_source_from_handoff:
+Converts handoff data into readable synthesis input blocks.
+
+_build_deduplicated_context:
+Builds fallback context from context_evidence/execution_result and deduplicates.
+
+_build_artifact_delivery_message:
+Formats deterministic artifact confirmation text (utility helper).
+
+_extract_skill_section:
+Extracts one section from SKILL.md for focused synthesis guidance.
+
+_write_draft_to_handoff:
+Stores synthesis draft into handoff (base key + scoped key).
+
+synthesis_node:
+Main orchestration entrypoint. Phases:
+1) Build source material
+2) Resolve agent/provider + persona/skills
+3) Generate draft
+4) Persist draft + metrics + handoff
+"""
+
+# ---------------------------------------------------------------------------
+# Section: resilient data extraction helpers
+# ---------------------------------------------------------------------------
 
 def _is_noise_key(key: str) -> bool:
     """Identify technical metadata keys that distract the LLM."""
@@ -47,6 +91,49 @@ def _extract_meaningful_content(data: Any) -> Any:
     
     return data
 
+
+# ---------------------------------------------------------------------------
+# Section: task / item scope helpers
+# ---------------------------------------------------------------------------
+
+def _get_current_task(state: AgentState) -> dict[str, Any] | None:
+    task_plan = state.get("task_plan")
+    current_task_id = state.get("current_task")
+    if not isinstance(task_plan, list) or not current_task_id:
+        return None
+    return next((t for t in task_plan if isinstance(t, dict) and t.get("id") == current_task_id), None)
+
+
+def _get_item_key_from_task(task: dict[str, Any] | None) -> str | None:
+    if not isinstance(task, dict):
+        return None
+    context = task.get("context")
+    if not isinstance(context, dict):
+        return None
+    item_key = context.get("item_key")
+    if not isinstance(item_key, str):
+        return None
+    cleaned = item_key.strip()
+    return cleaned or None
+
+
+def _handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str, Any]:
+    """Prefer item-scoped handoff entries when available.
+
+    Entries are scoped by suffix `::<item_key>`. If no scoped entries exist,
+    fallback to full handoff for backward compatibility.
+    """
+    if not item_key:
+        return handoff
+    suffix = f"::{item_key}"
+    scoped = {k: v for k, v in handoff.items() if isinstance(k, str) and k.endswith(suffix)}
+    return scoped or handoff
+
+
+# ---------------------------------------------------------------------------
+# Section: source material builders
+# ---------------------------------------------------------------------------
+
 def _build_source_from_handoff(state: AgentState) -> str:
     """Extract readable source content from the handoff.
 
@@ -57,8 +144,12 @@ def _build_source_from_handoff(state: AgentState) -> str:
     if not isinstance(handoff, dict) or not handoff:
         return ""
 
+    task = _get_current_task(state)
+    item_key = _get_item_key_from_task(task)
+    handoff_view = _handoff_for_item(handoff, item_key)
+
     sections: list[str] = []
-    for key, value in handoff.items():
+    for key, value in handoff_view.items():
         if isinstance(value, str) and value.strip():
             sections.append(f"=== {key} ===\n{value}")
         elif isinstance(value, dict):
@@ -80,6 +171,18 @@ def _build_deduplicated_context(state: AgentState) -> str:
     evidence = state.get("context_evidence") or []
     if not evidence and state.get("execution_result"):
         evidence = [state.get("execution_result")]
+
+    task = _get_current_task(state)
+    item_key = _get_item_key_from_task(task)
+    if isinstance(evidence, list) and item_key:
+        scoped = [
+            item for item in evidence
+            if isinstance(item, dict)
+            and isinstance(item.get("item_key"), str)
+            and item.get("item_key") == item_key
+        ]
+        if scoped:
+            evidence = scoped
 
     processed_items = []
     seen_hashes = set()
@@ -105,6 +208,11 @@ def _build_deduplicated_context(state: AgentState) -> str:
         return ""
 
     return json.dumps(processed_items, indent=2, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Section: output/prompt utilities
+# ---------------------------------------------------------------------------
 
 def _build_artifact_delivery_message(content: Any) -> str | None:
     """Deterministic confirmation for document creation."""
@@ -133,14 +241,24 @@ def _extract_skill_section(skill_text: str, section_name: str) -> str:
     return match.group(1).strip() if match else skill_text
 
 
-# --- CORE NODE ---
+# ---------------------------------------------------------------------------
+# Section: handoff write helper
+# ---------------------------------------------------------------------------
 
 def _write_draft_to_handoff(state: AgentState, draft: str) -> dict[str, Any]:
-    """Store synthesis_draft in the handoff so artifact tasks can consume it."""
+    """Store synthesis draft in handoff (base + item-scoped key when available)."""
     handoff = dict(state.get("handoff") or {})
+    task = _get_current_task(state)
+    item_key = _get_item_key_from_task(task)
     handoff["synthesis_draft"] = {"content": draft}
+    if item_key:
+        handoff[f"synthesis_draft::{item_key}"] = {"content": draft}
     return handoff
 
+
+# ---------------------------------------------------------------------------
+# Section: core node
+# ---------------------------------------------------------------------------
 
 def synthesis_node(state: AgentState) -> dict[str, Any]:
     """
@@ -155,14 +273,14 @@ def synthesis_node(state: AgentState) -> dict[str, Any]:
             "handoff": _write_draft_to_handoff(state, draft),
         }
 
-    # 2. Gather and Clean Source Material
+    # Phase 1: Gather and clean source material.
     source_material = _build_deduplicated_context(state)
     
-    # Fallback to user input if no evidence was gathered
+    # Fallback: if no evidence was gathered, use user input as minimal source.
     if not source_material:
         source_material = str(state.get("user_input") or "No data gathered.")
 
-    # 4. LLM Synthesis
+    # Phase 2: Resolve agent/provider context.
     agent_key = state.get("agent_key")
     if not agent_key:
         return _create_response(source_material)
@@ -171,7 +289,7 @@ def synthesis_node(state: AgentState) -> dict[str, Any]:
         agent = load_agent(agent_key)
         provider = get_provider_for_role(agent, "writer")
         
-        # Load persona/skills with fail-safes
+        # Phase 3: Load persona/skill guidance (best effort).
         persona = ""
         skill = ""
         try:
@@ -182,18 +300,16 @@ def synthesis_node(state: AgentState) -> dict[str, Any]:
 
         task_description = ""
         skill_section = ""
-        task_plan = state.get("task_plan")
-        current_task_id = state.get("current_task")
-        if isinstance(task_plan, list) and current_task_id:
-            current_task = next((t for t in task_plan if isinstance(t, dict) and t.get("id") == current_task_id), None)
-            if current_task:
-                task_description = str(current_task.get("description") or "")
-                ctx = current_task.get("context")
-                if isinstance(ctx, dict):
-                    skill_section = str(ctx.get("skill_section") or "")
+        current_task = _get_current_task(state)
+        if current_task:
+            task_description = str(current_task.get("description") or "")
+            ctx = current_task.get("context")
+            if isinstance(ctx, dict):
+                skill_section = str(ctx.get("skill_section") or "")
 
         skill_for_synthesis = _extract_skill_section(skill, skill_section) if skill_section else skill
 
+        # Phase 4: Build synthesis prompt and generate draft.
         messages = build_synthesis_messages(
             user_query=str(state.get("user_input", "")),
             raw_data=source_material,
@@ -206,11 +322,10 @@ def synthesis_node(state: AgentState) -> dict[str, Any]:
         polished, metric_synthesis = timed_generate(provider, messages)
         polished_text = str(polished or "").strip()
 
-        # Final Safety Check: If LLM failed or produced nonsense, use the cleaned material
+        # Safety fallback: if generation looks invalid, preserve source material.
         final_draft = polished_text if (polished_text and not (polished_text.startswith("{") and "}" in polished_text)) else source_material
         return _create_response(final_draft, metric_synthesis)
 
     except Exception as e:
         logger.exception(f"Synthesis LLM failed: {e}")
         return _create_response(source_material)
-

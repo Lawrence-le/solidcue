@@ -5,6 +5,7 @@ to guide multi-step workflows. Each task has a type, description, and status.
 """
 
 import json
+import hashlib
 import logging
 import re
 from typing import Any
@@ -149,6 +150,62 @@ def _guardrail_renumber_task_ids(tasks: list[dict[str, Any]]) -> list[dict[str, 
     return normalized
 
 
+def _item_key_from_url(url: str) -> str:
+    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
+    return f"u_{digest}"
+
+
+def _guardrail_assign_item_keys(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure each task has a stable `context.item_key`.
+
+    Priority:
+    1) Keep explicit context.item_key if present.
+    2) Derive from URL-like context fields (stable hash key).
+    3) Reuse single discovered key for non-URL tasks in the same plan.
+    4) Fallback to deterministic sequence key.
+    """
+    url_fields = ("posting_url", "url", "jd_url", "job_url")
+    url_to_item: dict[str, str] = {}
+    discovered_keys: list[str] = []
+    fallback_counter = 0
+    normalized: list[dict[str, Any]] = []
+
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        context = task.get("context") if isinstance(task.get("context"), dict) else {}
+        task_context = dict(context)
+
+        explicit_key = str(task_context.get("item_key") or "").strip()
+        item_key = _slug(explicit_key) if explicit_key else ""
+
+        if not item_key:
+            matched_url = ""
+            for field in url_fields:
+                candidate = task_context.get(field)
+                if isinstance(candidate, str) and candidate.strip():
+                    matched_url = candidate.strip()
+                    break
+            if matched_url:
+                item_key = url_to_item.get(matched_url) or _item_key_from_url(matched_url)
+                url_to_item[matched_url] = item_key
+
+        if not item_key and len(discovered_keys) == 1:
+            item_key = discovered_keys[0]
+
+        if not item_key:
+            fallback_counter += 1
+            item_key = f"item_{fallback_counter}"
+
+        if item_key not in discovered_keys:
+            discovered_keys.append(item_key)
+
+        task_context["item_key"] = item_key
+        normalized.append({**task, "context": task_context})
+
+    return normalized
+
+
 def _slug(text: str) -> str:
     value = re.sub(r"[^a-z0-9]+", "_", str(text).casefold()).strip("_")
     return value or "item"
@@ -242,6 +299,43 @@ def _guardrail_normalize_task_shape(tasks: list[dict[str, Any]]) -> list[dict[st
     return normalized
 
 
+def _apply_planning_guardrails(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize planner output into canonical runtime shape.
+
+    Pipeline (order matters):
+    1) Normalize task shape/types/context/requires
+    2) Renumber task ids deterministically
+    3) Inject per-item `context.item_key`
+    """
+    normalized = _guardrail_normalize_task_shape(tasks)
+    renumbered = _guardrail_renumber_task_ids(normalized)
+    with_item_keys = _guardrail_assign_item_keys(renumbered)
+    return with_item_keys
+
+
+def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build raw task plan (pre-guardrails) and planning metrics."""
+    user_input = state.get("user_input", "")
+    if not user_input.strip():
+        return (
+            [
+                {
+                    "id": "task_1",
+                    "type": "synthesis",
+                    "description": "Respond to user",
+                    "requires": ["final_response_draft_text"],
+                    "status": "pending",
+                }
+            ],
+            {},
+        )
+
+    task_plan, metric_planning = _llm_plan(state)
+    if not task_plan:
+        task_plan = _fallback_task_plan(state)
+    return task_plan, metric_planning
+
+
 def _conversational_response(state: AgentState) -> dict[str, Any]:
     agent_key = state.get("agent_key")
     if not isinstance(agent_key, str) or not agent_key:
@@ -290,25 +384,8 @@ def planning_node(state: AgentState) -> dict[str, Any]:
     if state.get("phase") == "conversational":
         return _conversational_response(state)
 
-    user_input = state.get("user_input", "")
-
-    if not user_input.strip():
-        task_plan = [{
-            "id": "task_1",
-            "type": "synthesis",
-            "description": "Respond to user",
-            "requires": ["final_response_draft_text"],
-            "status": "pending"
-        }]
-    else:
-        task_plan, metric_planning = _llm_plan(state)
-        if not task_plan:
-            task_plan = _fallback_task_plan(state)
-    if not user_input.strip():
-        metric_planning = {}
-
-    task_plan = _guardrail_normalize_task_shape(task_plan)
-    task_plan = _guardrail_renumber_task_ids(task_plan)
+    raw_task_plan, metric_planning = _build_task_plan_from_input(state)
+    task_plan = _apply_planning_guardrails(raw_task_plan)
 
     first_task_id = task_plan[0]["id"] if task_plan else "task_1"
     return {
