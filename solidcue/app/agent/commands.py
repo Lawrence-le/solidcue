@@ -461,7 +461,6 @@ def run_agent_cmd(debug: bool = False) -> None:
         # print_debug_header("DEBUG Tool Result")
         # print_debug_value("tool_call_history", result.get("tool_call_history"), max_len=999999)
         # print_debug_value("execution_result", result.get("execution_result"))
-        # print_debug_value("context_evidence", result.get("context_evidence"))
 
         # print_debug_header("DEBUG Validation Result")
         # print_debug_value("validation_result", result.get("validation_result"))

@@ -81,7 +81,6 @@ _EXAMPLE_STATE: dict[str, Any] = {
         "content": None,
         "error": "Example error",
     },
-    "context_evidence": [],
     "handoff": {},
     "retry_reason": "RETRY_STATUS: EXAMPLE",
 }

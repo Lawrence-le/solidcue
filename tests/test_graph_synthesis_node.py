@@ -94,7 +94,7 @@ def test_synthesis_falls_back_to_raw_material_when_llm_fails(monkeypatch) -> Non
     result = synthesis_node(
         {
             "agent_key": "x",
-            "context_evidence": [{"task_id": "task_1", "tool_name": "search_web", "content": "Raw tool output"}],
+            "execution_result": {"success": True, "content": "Raw tool output"},
         }
     )
 
@@ -109,7 +109,7 @@ def test_synthesis_prompt_includes_actionable_validation_retry_reason(monkeypatc
         {
             "agent_key": "x",
             "retry_reason": "Ungrounded claims: Redis and SQLite.",
-            "context_evidence": [{"task_id": "task_1", "tool_name": "read_file", "content": "Python evidence"}],
+            "execution_result": {"success": True, "content": "Python evidence"},
         }
     )
 

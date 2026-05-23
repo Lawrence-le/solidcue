@@ -24,7 +24,9 @@ _get_current_task / _get_item_key_from_task:
 Resolve current task and optional item scope.
 
 _write_handoff:
-Persist successful task output into handoff (base + item-scoped key).
+Persist successful task output into handoff using deterministic keying:
+- item-bound outputs: `<requires_key>::<item_key>`
+- shared outputs: `global::<requires_key>`
 
 _needs_handoff_fill / _is_truncated_copy / _fill_from_handoff:
 Determine when and how handoff payload values should replace tool arguments.
@@ -110,10 +112,11 @@ def _write_handoff(state: AgentState, execution_result: dict[str, Any]) -> dict[
     if content is None:
         return None
     handoff = dict(state.get("handoff") or {})
-    handoff[requires_key] = content
     item_key = _get_item_key_from_task(task)
     if item_key:
         handoff[f"{requires_key}::{item_key}"] = content
+    else:
+        handoff[f"global::{requires_key}"] = content
     return handoff
 
 
@@ -269,16 +272,25 @@ def _is_artifact_generation_task(state: AgentState, task: dict[str, Any] | None)
 
 
 def _handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str, Any]:
-    """Prefer item-scoped handoff entries when an item_key is available.
+    """Build a scoped handoff view for the current task.
 
-    Entries are scoped by suffix `::<item_key>`. If no scoped entries exist,
-    return the full handoff for backward-compatible behavior.
+    Rules:
+    - Include item-scoped entries for `::<item_key>` and strip suffix.
+    - Always include shared `global::` entries and strip prefix.
+    - Do not fall back to full unscoped handoff to avoid cross-item leakage.
     """
-    if not item_key:
-        return handoff
-    suffix = f"::{item_key}"
-    scoped = {k: v for k, v in handoff.items() if isinstance(k, str) and k.endswith(suffix)}
-    return scoped or handoff
+    scoped: dict[str, Any] = {}
+    if item_key:
+        suffix = f"::{item_key}"
+        for key, value in handoff.items():
+            if isinstance(key, str) and key.endswith(suffix):
+                scoped[key[: -len(suffix)]] = value
+
+    for key, value in handoff.items():
+        if isinstance(key, str) and key.startswith("global::"):
+            scoped[key[len("global::"):]] = value
+
+    return scoped
 
 
 def _execution_result(success: bool, result_type: str, content: Any, error: Any) -> dict[str, Any]:

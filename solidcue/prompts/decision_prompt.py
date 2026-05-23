@@ -29,7 +29,7 @@ PHASE_INSTRUCTION: dict[str, str] = {
 }
 
 PHASE_WITH_SKILL_GUIDANCE = {"artifact", "synthesis"}
-PHASE_WITH_TOOLS_GUIDANCE = {"source", "artifact"}
+PHASE_WITH_TOOLS_GUIDANCE = {"artifact", "source"}
 
 TIME_LOCATION_DEFAULTS = {
     "current_time": "Unknown time",
@@ -93,9 +93,9 @@ _EXPENSIVE_KEYS = {
     "file_content",
     "data",
 }
-_EXPENSIVE_VALUE_MAX_CHARS = 200
-_NORMAL_VALUE_MAX_CHARS = 500
-_PHASE_GUIDANCE_MAX_CHARS = 1500
+_EXPENSIVE_VALUE_MAX_CHARS = 2000
+_NORMAL_VALUE_MAX_CHARS = 5000
+_PHASE_GUIDANCE_MAX_CHARS = 50000
 
 
 def _truncate_value(key: str, value: Any) -> Any:
@@ -229,20 +229,6 @@ def _build_task_guidance(
             f"explaining the blocker, and the router will handle the retry.\n"
         )
 
-    skill_section_ref = task_context.get("follow_skill_section") if isinstance(task_context, dict) else None
-    skill_delegation = ""
-    if isinstance(skill_section_ref, str) and skill_section_ref.strip():
-        skill_delegation = (
-            f"\n=== SKILL.md DELEGATION ===\n"
-            f"This task references SKILL.md section: '{skill_section_ref.strip()}'\n"
-            f"Read that section in the Skill guidance below for:\n"
-            f"- Field/column specifications\n"
-            f"- Default values and value mappings\n"
-            f"- Naming patterns and formats\n"
-            f"You MUST follow the section's specifications exactly when constructing tool inputs.\n"
-            f"If the section is missing or unclear, respond with action=respond explaining the gap.\n"
-        )
-
     history_summary = _format_tool_call_history(tool_call_history)
     return (
         f"=== CURRENT TASK DIRECTIVE ===\n"
@@ -250,7 +236,6 @@ def _build_task_guidance(
         f"Goal: {task_desc}\n"
         f"Task execution context (authoritative values for tool arguments):\n{task_context_text}\n"
         f"{tool_enforcement}"
-        f"{skill_delegation}"
         f"Phase instruction: {phase_instruction}\n"
         f"Do NOT work on any other task.\n"
         f"Do NOT call a tool that already succeeded in a previous task.\n\n"

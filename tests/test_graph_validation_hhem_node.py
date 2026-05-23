@@ -11,12 +11,14 @@ from solidcue.core.graph_node.validation_hhem_node import (
 )
 
 
-def _make_state(draft=None, context_evidence=None, user_input=None, agent_key=None):
+def _make_state(draft=None, handoff=None, user_input=None, agent_key=None):
     state = {}
     if draft is not None:
         state["synthesis_draft"] = draft
-    if context_evidence is not None:
-        state["context_evidence"] = context_evidence
+    if handoff is not None:
+        state["handoff"] = handoff
+        state["task_plan"] = [{"id": "task_1", "context": {"item_key": "u_1"}}]
+        state["current_task"] = "task_1"
     if user_input is not None:
         state["user_input"] = user_input
     if agent_key is not None:
@@ -36,7 +38,7 @@ def test_none_draft_fails():
 
 
 def test_no_premise_skips_with_pass():
-    result = validation_hhem_node(_make_state(draft="Some output", context_evidence=[], user_input=""))
+    result = validation_hhem_node(_make_state(draft="Some output", handoff={}, user_input=""))
     assert result["failure_type"] is None
     assert result["validation_report"]["score"] == 1.0
 
@@ -46,7 +48,7 @@ def test_all_claims_grounded_passes(mock_score):
     mock_score.return_value = (0.85, [{"claim": "Python is a language.", "score": 0.85}], {})
     result = validation_hhem_node(_make_state(
         draft="Python is a programming language.",
-        context_evidence=["Python is a popular programming language."],
+        handoff={"source::u_1": {"content": "Python is a popular programming language."}},
     ))
     assert result["failure_type"] is None
     assert result["validation_report"]["score"] == 0.85
@@ -62,7 +64,7 @@ def test_hhem_fails_but_llm_clears_metadata(mock_score, mock_llm):
     mock_llm.return_value = ([], "All flagged items are metadata.", {})
     result = validation_hhem_node(_make_state(
         draft="# Darren Liew\nLed a team of 4 engineers.",
-        context_evidence=["Darren led engineering teams."],
+        handoff={"source::u_1": {"content": "Darren led engineering teams."}},
         agent_key="test_agent",
     ))
     assert result["failure_type"] is None
@@ -78,7 +80,7 @@ def test_hhem_fails_and_llm_confirms_hallucination(mock_score, mock_llm):
     mock_llm.return_value = (["Managed a $2M budget annually."], "Not supported by source.", {})
     result = validation_hhem_node(_make_state(
         draft="Managed a $2M budget annually.",
-        context_evidence=["Junior developer for 2 years."],
+        handoff={"source::u_1": {"content": "Junior developer for 2 years."}},
         agent_key="test_agent",
     ))
     assert result["failure_type"] == "bad_synthesis"
@@ -86,71 +88,54 @@ def test_hhem_fails_and_llm_confirms_hallucination(mock_score, mock_llm):
 
 
 @patch("solidcue.core.graph_node.validation_hhem_node._score_groundedness")
-def test_falls_back_to_user_input_as_premise(mock_score):
+def test_no_premise_from_handoff_skips_scoring(mock_score):
     mock_score.return_value = (0.7, [{"claim": "The answer is 42.", "score": 0.7}], {})
     result = validation_hhem_node(_make_state(
         draft="The answer is 42.",
         user_input="What is the meaning of life?",
     ))
-    mock_score.assert_called_once_with("What is the meaning of life?", "The answer is 42.")
+    mock_score.assert_not_called()
     assert result["failure_type"] is None
 
 
-def test_build_premise_prefers_grounding_evidence():
+def test_build_premise_extracts_handoff_text():
     premise = _build_premise({
-        "context_evidence": [
-            {"evidence_role": "alignment", "content": "Job requires Kubernetes."},
-            {"evidence_role": "grounding", "content": "Candidate used Python."},
-            {"evidence_role": "context", "content": "Company background."},
-        ]
+        "handoff": {
+            "alignment::u_1": {"content": "Job requires Kubernetes."},
+            "grounding::u_1": {"content": "Candidate used Python."},
+            "global::ctx": {"content": "Company background."},
+        },
+        "task_plan": [{"id": "task_1", "context": {"item_key": "u_1"}}],
+        "current_task": "task_1",
     })
 
     assert "Candidate used Python" in premise
-    assert "Job requires Kubernetes" not in premise
-    assert "Company background" not in premise
+    assert "Job requires Kubernetes" in premise
+    assert "Company background" in premise
 
 
-def test_build_premise_extracts_nested_grounding_content_text():
+def test_build_premise_extracts_nested_content_text():
     premise = _build_premise({
-        "context_evidence": [
-            {
-                "evidence_role": "grounding",
-                "tool_name": "drive_download_file",
-                "content": {
-                    "name": "resume_master",
-                    "content": "Candidate resume master full text.",
-                    "mimeType": "text/plain",
-                },
+        "handoff": {
+            "master_resume_downloaded::u_1": {
+                "name": "resume_master",
+                "content": "Candidate resume master full text.",
+                "mimeType": "text/plain",
             }
-        ]
+        },
+        "task_plan": [{"id": "task_1", "context": {"item_key": "u_1"}}],
+        "current_task": "task_1",
     })
 
     assert premise == "Candidate resume master full text."
-    assert "drive_download_file" not in premise
-    assert "mimeType" not in premise
 
 
-def test_build_premise_skips_when_role_tagged_evidence_has_no_grounding():
+def test_build_premise_returns_empty_when_no_handoff():
     premise = _build_premise({
-        "context_evidence": [
-            {"evidence_role": "alignment", "content": "Job requires Kubernetes."},
-            {"evidence_role": "context", "content": "Company background."},
-        ]
+        "handoff": {}
     })
 
     assert premise == ""
-
-
-def test_build_premise_falls_back_to_all_legacy_untagged_context():
-    premise = _build_premise({
-        "context_evidence": [
-            {"content": "Legacy untagged evidence."},
-            "Legacy string evidence.",
-        ]
-    })
-
-    assert "Legacy untagged evidence" in premise
-    assert "Legacy string evidence" in premise
 
 
 def test_chunk_premise_keeps_long_single_paragraph_content():

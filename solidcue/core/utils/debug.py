@@ -104,9 +104,9 @@ def print_debug_value(label: str, value: Any, max_len: int = 4000) -> None:
     console.print(f"[bold bright_white]{label}[/bold bright_white]: {formatted}")
 
 
-_VERBOSE_STATE_KEYS = {"context_evidence"}
 _UNTRUNCATED_STATE_KEYS = {"tool_call_history"}
 _TRUNCATED_TEXT_KEYS = {"text"}
+_VERBOSE_STATE_KEYS: set[str] = set()
 
 
 def _truncate_text_content_fields(value: Any, *, max_len: int = 100) -> Any:

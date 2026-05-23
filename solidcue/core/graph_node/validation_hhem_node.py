@@ -216,14 +216,16 @@ def _build_premise(state: AgentState) -> str:
         return cleaned or None
 
     def handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str, Any]:
-        if not item_key:
-            return handoff
-        suffix = f"::{item_key}"
         scoped: dict[str, Any] = {}
+        if item_key:
+            suffix = f"::{item_key}"
+            for key, value in handoff.items():
+                if isinstance(key, str) and key.endswith(suffix):
+                    scoped[key[: -len(suffix)]] = value
         for key, value in handoff.items():
-            if isinstance(key, str) and key.endswith(suffix):
-                scoped[key[: -len(suffix)]] = value
-        return scoped or handoff
+            if isinstance(key, str) and key.startswith("global::"):
+                scoped[key[len("global::"):]] = value
+        return scoped
 
     def extract_text(item: Any) -> str:
         if isinstance(item, str):

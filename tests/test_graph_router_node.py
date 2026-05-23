@@ -283,14 +283,6 @@ def test_router_keeps_source_gathering_when_llm_says_incomplete() -> None:
                 "status": "pending",
             }
         ],
-        "context_evidence": [
-            {
-                "task_id": "task_1",
-                "tool_name": "drive_list_by_path",
-                "tool_input": {"path": "resume_agent/source/profile"},
-                "content": "File listing only — no document text",
-            }
-        ],
         "agent_key": "resume_builder",
     }
 
@@ -324,14 +316,6 @@ def test_router_advances_to_next_task_when_llm_says_complete() -> None:
                 "requires": ["complete_answer"],
                 "status": "pending",
             },
-        ],
-        "context_evidence": [
-            {
-                "task_id": "task_1",
-                "tool_name": "drive_download_file",
-                "tool_input": {"file_id": "abc123"},
-                "content": "Full profile document text here",
-            }
         ],
         "agent_key": "resume_builder",
     }

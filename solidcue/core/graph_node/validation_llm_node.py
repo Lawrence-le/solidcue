@@ -140,17 +140,21 @@ def _current_task_item_key(state: AgentState) -> str | None:
 
 
 def _handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str, Any]:
-    """Prefer handoff entries scoped to current item via `::<item_key>` suffix."""
-    if not item_key:
-        return handoff
-    suffix = f"::{item_key}"
+    """Build validation handoff view for current item + global shared entries."""
     scoped: dict[str, Any] = {}
+    if item_key:
+        suffix = f"::{item_key}"
+        for key, value in handoff.items():
+            if not isinstance(key, str):
+                continue
+            if key.endswith(suffix):
+                scoped[key[: -len(suffix)]] = value
+
     for key, value in handoff.items():
-        if not isinstance(key, str):
-            continue
-        if key.endswith(suffix):
-            scoped[key[: -len(suffix)]] = value
-    return scoped or handoff
+        if isinstance(key, str) and key.startswith("global::"):
+            scoped[key[len("global::"):]] = value
+
+    return scoped
 
 
 def _extract_text_from_value(value: Any) -> str:
@@ -204,7 +208,6 @@ def _build_validation_evidence_from_handoff(state: AgentState) -> list[dict[str,
             {
                 "source_key": source_key,
                 "item_key": item_key or "",
-                "evidence_role": "grounding",
                 "content": text,
             }
         )
@@ -233,7 +236,7 @@ def _llm_validate(state: AgentState, draft_output: str) -> tuple[dict[str, Any] 
         messages = build_validation_messages(
             user_query=str(state.get("user_input") or ""),
             draft_output=draft_output,
-            context_evidence=evidence_for_validation,
+            validation_evidence=evidence_for_validation,
             task_description=task_description,
         )
         raw_output, metric_validation = timed_generate(provider, messages)

@@ -10,13 +10,13 @@ def build_validation_messages(
     *,
     user_query: str,
     draft_output: str,
-    context_evidence: list[dict[str, Any]] | None = None,
+    validation_evidence: list[dict[str, Any]] | None = None,
     task_description: str | None = None,
 ) -> list[dict[str, str]]:
     payload: dict[str, Any] = {
         "user_query": user_query,
         "draft_output": draft_output,
-        "context_evidence": context_evidence if isinstance(context_evidence, list) else [],
+        "validation_evidence": validation_evidence if isinstance(validation_evidence, list) else [],
     }
     if task_description:
         payload["current_task"] = task_description

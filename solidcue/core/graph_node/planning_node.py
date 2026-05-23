@@ -13,28 +13,6 @@ from solidcue.prompts.planning_prompt import build_planning_messages
 logger = logging.getLogger(__name__)
 _VAGUE_REQUIRES = {"data", "details", "information", "context", "output", "done"}
 _ACTION_PREFIXES = ("execute ", "download ", "list ", "run ", "call ", "use ")
-_EVIDENCE_ROLES = {"grounding", "alignment", "context"}
-_GROUNDING_HINTS = (
-    "candidate",
-    "cv",
-    "linkedin_profile",
-    "master_resume",
-    "profile",
-    "resume_master",
-    "work_history",
-)
-_ALIGNMENT_HINTS = (
-    "audience",
-    "criteria",
-    "jd",
-    "job",
-    "job_description",
-    "posting",
-    "requirements",
-    "role",
-    "rubric",
-    "target",
-)
 
 """
 Planning Node - Function Overview
@@ -63,9 +41,6 @@ Convert free-form text into snake_case-safe token.
 
 _normalize_requires_for_task:
 Normalize/validate `requires` labels with safe defaults by task type.
-
-_infer_evidence_role:
-Infer evidence intent (`grounding`, `alignment`, `context`) for source tasks.
 
 _guardrail_normalize_task_shape:
 Coerce planner output into canonical runtime task shape.
@@ -245,9 +220,9 @@ def _metadata_item_map(metadata: dict[str, Any] | None) -> tuple[dict[int, str],
         index = item.get("index")
         if isinstance(index, int) and index > 0:
             by_index[index] = key
-        url = str(item.get("url") or item.get("source_ref") or "").strip()
-        if url:
-            by_url[url] = key
+        source_ref = str(item.get("source_ref") or "").strip()
+        if source_ref:
+            by_url[source_ref] = key
     return by_index, by_url
 
 
@@ -259,14 +234,15 @@ def _guardrail_assign_item_keys(
 
     Priority:
     1) Keep explicit context.item_key if present.
-    2) Resolve from discovery map via context.source_item_index.
+    2) Resolve from discovery map via context.source_item_index (input-only).
     3) Resolve from discovery map via URL-like context fields.
     4) Resolve from discovery map via ordinal wording in task description.
     5) Derive from URL-like context fields (stable hash key).
+
     6) Inherit the most recent URL-derived/explicit key for adjacent non-URL tasks.
     7) Fallback to deterministic sequence key.
     """
-    url_fields = ("posting_url", "url", "jd_url", "job_url")
+    url_fields = ("source_ref", "posting_url", "url", "jd_url", "job_url")
     url_to_item: dict[str, str] = {}
     metadata_index_map, metadata_url_map = _metadata_item_map(metadata)
     discovered_keys: list[str] = []
@@ -279,16 +255,19 @@ def _guardrail_assign_item_keys(
             continue
         context = task.get("context") if isinstance(task.get("context"), dict) else {}
         task_context = dict(context)
+        resolved_index: int | None = None
 
         explicit_key = str(task_context.get("item_key") or "").strip()
         item_key = _slug(explicit_key) if explicit_key else ""
 
-        if not item_key:
-            index_value = task_context.get("source_item_index")
-            if isinstance(index_value, int):
-                item_key = metadata_index_map.get(index_value, "")
-            elif isinstance(index_value, str) and index_value.strip().isdigit():
-                item_key = metadata_index_map.get(int(index_value.strip()), "")
+        index_value = task_context.get("source_item_index")
+        if isinstance(index_value, int):
+            resolved_index = index_value
+        elif isinstance(index_value, str) and index_value.strip().isdigit():
+            resolved_index = int(index_value.strip())
+
+        if not item_key and isinstance(resolved_index, int):
+            item_key = metadata_index_map.get(resolved_index, "")
 
         if not item_key:
             matched_url = ""
@@ -298,16 +277,23 @@ def _guardrail_assign_item_keys(
                     matched_url = candidate.strip()
                     break
             if matched_url:
-                item_key = (
+                mapped_key = (
                     metadata_url_map.get(matched_url)
                     or url_to_item.get(matched_url)
                     or _item_key_from_url(matched_url)
                 )
-                url_to_item[matched_url] = item_key
+                item_key = mapped_key
+                url_to_item[matched_url] = mapped_key
+                if metadata_index_map and not isinstance(resolved_index, int):
+                    for idx, key in metadata_index_map.items():
+                        if key == mapped_key:
+                            resolved_index = idx
+                            break
 
         if not item_key:
             ordinal_index = _ordinal_index_from_text(task.get("description"))
             if isinstance(ordinal_index, int):
+                resolved_index = ordinal_index
                 item_key = metadata_index_map.get(ordinal_index, "")
 
         if not item_key and current_item_key:
@@ -325,6 +311,10 @@ def _guardrail_assign_item_keys(
         current_item_key = item_key
 
         task_context["item_key"] = item_key
+        # Keep source_item_index as an internal planning hint only.
+        # Runtime task context should bind by item_key only.
+        task_context.pop("source_item_index", None)
+
         normalized.append({**task, "context": task_context})
 
     return normalized
@@ -369,30 +359,6 @@ def _normalize_requires_for_task(task_type: str, requires: Any) -> list[str]:
     return ["task_result_ready"]
 
 
-def _infer_evidence_role(task_type: str, task: dict[str, Any], requires: list[str]) -> str:
-    if task_type != "source_gathering":
-        return "context"
-
-    explicit = str(task.get("evidence_role") or "").strip().casefold()
-    if explicit in _EVIDENCE_ROLES:
-        return explicit
-
-    haystack_parts = [
-        str(task.get("description") or ""),
-        " ".join(requires),
-    ]
-    raw_context = task.get("context")
-    if isinstance(raw_context, dict):
-        haystack_parts.extend(str(value) for value in raw_context.values())
-    haystack = " ".join(haystack_parts).casefold()
-
-    if any(hint in haystack for hint in _GROUNDING_HINTS):
-        return "grounding"
-    if any(hint in haystack for hint in _ALIGNMENT_HINTS):
-        return "alignment"
-    return "context"
-
-
 def _guardrail_normalize_task_shape(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for task in tasks:
@@ -419,7 +385,6 @@ def _guardrail_normalize_task_shape(tasks: list[dict[str, Any]]) -> list[dict[st
                 "type": task_type,
                 "description": str(task.get("description") or f"Execute {task_type} task"),
                 "requires": requires,
-                "evidence_role": _infer_evidence_role(task_type, task, requires),
                 "context": context,
                 "status": str(task.get("status") or "pending"),
             }

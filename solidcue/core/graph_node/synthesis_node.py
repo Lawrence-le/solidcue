@@ -28,13 +28,15 @@ _get_item_key_from_task:
 Reads context.item_key from current task (if present).
 
 _handoff_for_item:
-Builds an item-scoped handoff view using `::<item_key>` suffix keys.
+Builds an item-scoped handoff view:
+- item-bound entries from `::<item_key>`
+- shared entries from `global::`
 
 _build_source_from_handoff:
 Converts handoff data into readable synthesis input blocks.
 
 _build_deduplicated_context:
-Builds fallback context from context_evidence/execution_result and deduplicates.
+Builds fallback context from execution_result and deduplicates.
 
 _build_artifact_delivery_message:
 Formats deterministic artifact confirmation text (utility helper).
@@ -43,7 +45,7 @@ _extract_skill_section:
 Extracts one section from SKILL.md for focused synthesis guidance.
 
 _write_draft_to_handoff:
-Stores synthesis draft into handoff (base key + scoped key).
+Stores synthesis draft into handoff using scoped/global keying.
 
 synthesis_node:
 Main orchestration entrypoint. Phases:
@@ -118,16 +120,24 @@ def _get_item_key_from_task(task: dict[str, Any] | None) -> str | None:
 
 
 def _handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str, Any]:
-    """Prefer item-scoped handoff entries when available.
+    """Build scoped handoff view for synthesis.
 
-    Entries are scoped by suffix `::<item_key>`. If no scoped entries exist,
-    fallback to full handoff for backward compatibility.
+    Returns only:
+    - item-scoped entries for this item key (suffix stripped)
+    - shared global entries (prefix stripped)
     """
-    if not item_key:
-        return handoff
-    suffix = f"::{item_key}"
-    scoped = {k: v for k, v in handoff.items() if isinstance(k, str) and k.endswith(suffix)}
-    return scoped or handoff
+    scoped: dict[str, Any] = {}
+    if item_key:
+        suffix = f"::{item_key}"
+        for key, value in handoff.items():
+            if isinstance(key, str) and key.endswith(suffix):
+                scoped[key[: -len(suffix)]] = value
+
+    for key, value in handoff.items():
+        if isinstance(key, str) and key.startswith("global::"):
+            scoped[key[len("global::"):]] = value
+
+    return scoped
 
 
 # ---------------------------------------------------------------------------
@@ -162,27 +172,13 @@ def _build_source_from_handoff(state: AgentState) -> str:
 def _build_deduplicated_context(state: AgentState) -> str:
     """
     Extracts source material, preferring handoff (full content) over
-    context_evidence (may be truncated).
+    execution_result fallback.
     """
     handoff_material = _build_source_from_handoff(state)
     if handoff_material:
         return handoff_material
 
-    evidence = state.get("context_evidence") or []
-    if not evidence and state.get("execution_result"):
-        evidence = [state.get("execution_result")]
-
-    task = _get_current_task(state)
-    item_key = _get_item_key_from_task(task)
-    if isinstance(evidence, list) and item_key:
-        scoped = [
-            item for item in evidence
-            if isinstance(item, dict)
-            and isinstance(item.get("item_key"), str)
-            and item.get("item_key") == item_key
-        ]
-        if scoped:
-            evidence = scoped
+    evidence = [state.get("execution_result")] if state.get("execution_result") else []
 
     processed_items = []
     seen_hashes = set()
@@ -246,13 +242,14 @@ def _extract_skill_section(skill_text: str, section_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _write_draft_to_handoff(state: AgentState, draft: str) -> dict[str, Any]:
-    """Store synthesis draft in handoff (base + item-scoped key when available)."""
+    """Store synthesis draft in handoff using scoped/global keying."""
     handoff = dict(state.get("handoff") or {})
     task = _get_current_task(state)
     item_key = _get_item_key_from_task(task)
-    handoff["synthesis_draft"] = {"content": draft}
     if item_key:
         handoff[f"synthesis_draft::{item_key}"] = {"content": draft}
+    else:
+        handoff["global::synthesis_draft"] = {"content": draft}
     return handoff
 
 

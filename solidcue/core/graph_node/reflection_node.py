@@ -26,13 +26,6 @@ Attach met/missing accomplishments to the latest task history entry.
 _merge_token_stats:
 Merge token usage/time/model stats from sub-steps.
 
-_evidence_signature / _append_context_evidence:
-Deduplicate and append evidence entries into `context_evidence`.
-Each stored entry includes task-scoping metadata (`task_id`, `item_key`).
-
-_has_substantial_text / _effective_evidence_role:
-Determine whether content is useful and classify evidence role.
-
 Main entrypoint:
 - `reflection_node`: resolve task requires, evaluate met/missing, update state.
 """
@@ -270,58 +263,6 @@ def _merge_token_stats(*stats_list: dict[str, Any]) -> dict[str, Any]:
     else:
         merged["method"] = "mixed_fallback"
     return merged
-
-
-def _evidence_signature(entry: dict[str, Any]) -> str:
-    """Dedup by tool_name + content hash — same tool returning same content is a duplicate."""
-    tool_name = entry.get("tool_name") or ""
-    content = json.dumps(entry.get("content"), sort_keys=True, ensure_ascii=True, default=str)
-    return f"{tool_name}:{hash(content)}"
-
-
-def _append_context_evidence(
-    state: AgentState,
-    new_entry: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Append new_entry to context_evidence, skipping duplicates by tool_name + content."""
-    existing = state.get("context_evidence")
-    history = list(existing) if isinstance(existing, list) else []
-    new_sig = _evidence_signature(new_entry)
-    if any(_evidence_signature(e) == new_sig for e in history if isinstance(e, dict)):
-        return history
-    history.append(new_entry)
-    return history
-
-
-def _has_substantial_text(value: Any) -> bool:
-    if isinstance(value, str):
-        return len(value.strip()) >= 80
-    if isinstance(value, list):
-        return any(_has_substantial_text(item) for item in value)
-    if isinstance(value, dict):
-        return any(
-            _has_substantial_text(value.get(key))
-            for key in ("content", "text", "body", "markdown")
-        )
-    return False
-
-
-def _effective_evidence_role(role: str, tool_name: str | None, content: Any) -> str:
-    """Only actual textual source material should be grounding evidence."""
-    normalized_role = role if role in {"grounding", "alignment", "context"} else "context"
-    if normalized_role != "grounding":
-        return normalized_role
-
-    normalized_tool = str(tool_name or "").casefold()
-    if "list" in normalized_tool or "search" in normalized_tool:
-        return "context"
-
-    if not _has_substantial_text(content):
-        return "context"
-
-    return "grounding"
-
-
 def reflection_node(state: AgentState) -> dict[str, Any]:
     """
     Evaluate the latest tool execution for the current task and write normalized state updates.
@@ -336,14 +277,14 @@ def reflection_node(state: AgentState) -> dict[str, Any]:
       - Deterministic pass when planned tool succeeded.
       - Otherwise LLM semantic check when needed.
     - Attach accomplishments to the latest matching `tool_call_history` entry.
-    - For source phase only: append deduplicated `context_evidence` when content is
-      non-empty; otherwise set `failure_type="missing_source"`.
+    - For source phase only: validate non-empty content; otherwise set
+      `failure_type="missing_source"`.
     - For artifact phase: skip evidence storage and return after accomplishment/metric updates.
 
     Returns:
     - A partial state delta containing some combination of:
-      `failure_type`, `tool_call_history`, `context_evidence`, `metric_reflection`,
-      and `metric_usage_events`.
+      `failure_type`, `tool_call_history`, `metric_reflection`, and
+      `metric_usage_events`.
     """
     execution_result = state.get("execution_result")
     metric_reflection: dict[str, Any] = {}
@@ -365,16 +306,12 @@ def reflection_node(state: AgentState) -> dict[str, Any]:
     task_plan = state.get("task_plan")
     current_task_id = state.get("current_task")
     task_requires: list[str] = []
-    evidence_role = "context"
     planned_tool: str | None = None
 
     if isinstance(task_plan, list) and current_task_id:
         current_task = next((t for t in task_plan if t.get("id") == current_task_id), None)
         if isinstance(current_task, dict):
             task_requires = current_task.get("requires") or []
-            raw_evidence_role = str(current_task.get("evidence_role") or "").strip().casefold()
-            if raw_evidence_role in {"grounding", "alignment", "context"}:
-                evidence_role = raw_evidence_role
             # Extract planned tool to enable deterministic accomplishment validation
             task_context = current_task.get("context")
             if isinstance(task_context, dict):
@@ -436,26 +373,6 @@ def reflection_node(state: AgentState) -> dict[str, Any]:
         update["failure_type"] = "missing_source"
         return update
 
-    task_id = state.get("current_task") or "unknown"
-    item_key: str | None = None
-    if isinstance(task_plan, list) and current_task_id:
-        current_task = next((t for t in task_plan if isinstance(t, dict) and t.get("id") == current_task_id), None)
-        if isinstance(current_task, dict):
-            task_context = current_task.get("context")
-            if isinstance(task_context, dict):
-                item_key_val = task_context.get("item_key")
-                if isinstance(item_key_val, str) and item_key_val.strip():
-                    item_key = item_key_val.strip()
-
-    new_entry = {
-        "task_id": task_id,
-        "item_key": item_key or "",
-        "evidence_role": _effective_evidence_role(evidence_role, tool_name, content),
-        "tool_name": tool_name if isinstance(tool_name, str) else "",
-        "content": content,
-    }
-
-    update["context_evidence"] = _append_context_evidence(state, new_entry)
     merged = _merge_token_stats(requires_token_stats)
     update.update(
         build_metric_state_delta(
@@ -466,5 +383,5 @@ def reflection_node(state: AgentState) -> dict[str, Any]:
     )
     update["failure_type"] = None
 
-    logger.debug("reflection: stored evidence for tool=%s", tool_name)
+    logger.debug("reflection: source content validated for tool=%s", tool_name)
     return update

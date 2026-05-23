@@ -11,12 +11,17 @@ class ToolCallState(TypedDict):
 
 
 class AgentState(TypedDict, total=False):
+    # --- Identity / request context ---
     agent_key: str
     user_input: str
     config: dict[str, Any]
     metadata: dict[str, Any]
+
+    # --- Message state ---
     messages: Annotated[list[dict[str, Any]], operator.add]
     llm_prompt_messages: list[dict[str, Any]]
+
+    # --- Metrics ---
     metric_usage_events: Annotated[list[dict[str, Any]], operator.add]
     metric_classifier: dict[str, Any]
     metric_planning: dict[str, Any]
@@ -27,7 +32,6 @@ class AgentState(TypedDict, total=False):
     metric_validation: dict[str, Any]
     metric_validation_hhem: dict[str, Any]
     metric_final_output: dict[str, Any]
-    max_retries: int
 
     # --- Redesign-canonical durable keys (per AGENT_GRAPH_REDESIGN.md) ---
     phase: Literal["source", "artifact", "synthesis", "final", "conversational"]
@@ -49,10 +53,12 @@ class AgentState(TypedDict, total=False):
     # --- Routing dispatch keys ---
     router_next: str
 
-    # --- Retry counters (per redesign: scoped per loop) ---
+    # --- Retry policy / counters (per redesign: scoped per loop) ---
+    max_retries: int
     source_attempt: int
     artifact_attempt: int
     synthesis_attempt: int
+    retry_reason: str | None
 
     # --- Decision/tool-call state (execution prep) ---
     active_tool_call: ToolCallState
@@ -63,8 +69,4 @@ class AgentState(TypedDict, total=False):
 
     # --- Execution state (source loop) ---
     execution_result: dict[str, Any]
-    context_evidence: list[dict[str, Any]]
     handoff: dict[str, Any]
-
-    # --- Prompt generation (for context to LLM nodes) ---
-    retry_reason: str | None

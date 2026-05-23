@@ -196,7 +196,7 @@ When a resume is generated for an application, update:
 ADD a new row after the existing row with:
 
 - Date Applied: Date of this task is created
-- Application Status: Default as Drafting
+- Application Status: Drafting
 - Company: The company names stated in JD
 - Role Title: The role stated in JD
 - Posting: The JD link provided by user

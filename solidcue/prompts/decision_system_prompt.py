@@ -35,6 +35,7 @@ def build_decision_system_prompt(
 ## Evidence
 - Treat tool outputs as evidence only for facts they explicitly contain.
 - Do not invent facts, achievements, dates, metrics, or technologies.
+- Treat URL text as link-only metadata. Do not derive factual fields from URL text; retrieve facts from tool output context.
 
 # AVAILABLE TOOLS
 {tool_descriptions}

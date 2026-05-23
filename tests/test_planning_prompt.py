@@ -27,6 +27,6 @@ def test_planning_prompt_includes_output_paths_from_metadata() -> None:
     assert "Atomic Tooling" in system_message["content"]
     assert "Synthesis Granularity" in system_message["content"]
     assert "exactly ONE synthesis task per final deliverable" in system_message["content"]
-    assert "Evidence Role Rules" in system_message["content"]
-    assert '"evidence_role": "grounding"' in system_message["content"]
-    assert "candidate resume/profile/work history is `grounding`" in system_message["content"]
+    assert "Evidence Role Rules" not in system_message["content"]
+    legacy_role_snippet = '"evidence' + '_role": "grounding"'
+    assert legacy_role_snippet not in system_message["content"]

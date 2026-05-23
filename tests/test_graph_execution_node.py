@@ -56,10 +56,10 @@ def _patch_happy_path(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(execution_node_module, "MCPClient", _MCPClient)
 
 
-def test_execution_node_does_not_write_context_evidence(
+def test_execution_node_does_not_write_legacy_evidence(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """context_evidence is now written by reflection_node, not execution_node."""
+    """Legacy evidence fields are not written by execution_node."""
     _patch_happy_path(monkeypatch)
 
     state: AgentState = {
@@ -74,7 +74,8 @@ def test_execution_node_does_not_write_context_evidence(
     }
 
     result = execution_node(state)
-    assert "context_evidence" not in result
+    legacy_key = "context" + "_evidence"
+    assert legacy_key not in result
 
 
 def test_decode_file_content_normalizes_google_docs_text_export() -> None:
@@ -263,12 +264,12 @@ def test_execution_fills_large_payload_from_required_handoff_key(monkeypatch: Mo
         "phase": "artifact",
         "current_task": "task_8",
         "task_plan": [
-            {"id": "task_8", "requires": ["resume_uploaded_to_drive"]},
+            {"id": "task_8", "requires": ["resume_uploaded_to_drive"], "context": {"item_key": "u_1"}},
         ],
         "handoff": {
-            "word_document_payload_generated": {"content_base64": expected_base64},
+            "word_document_payload_generated::u_1": {"content_base64": expected_base64},
             # Current task output key should never be used as input source.
-            "resume_uploaded_to_drive": {"content_base64": wrong_base64},
+            "resume_uploaded_to_drive::u_1": {"content_base64": wrong_base64},
         },
         "active_tool_call": {
             "action": "use_tool",

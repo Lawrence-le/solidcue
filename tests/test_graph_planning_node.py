@@ -113,22 +113,7 @@ def test_planning_includes_token_stats() -> None:
     assert isinstance(result["metric_planning"], dict)
 
 
-def test_planning_normalizes_explicit_evidence_role() -> None:
-    tasks = _guardrail_normalize_task_shape([
-        {
-            "id": "x",
-            "type": "source_gathering",
-            "description": "Load candidate resume master",
-            "requires": ["resume_master_collected"],
-            "evidence_role": "grounding",
-            "status": "pending",
-        }
-    ])
-
-    assert tasks[0]["evidence_role"] == "grounding"
-
-
-def test_planning_infers_resume_master_as_grounding() -> None:
+def test_planning_normalizes_task_without_legacy_role_field() -> None:
     tasks = _guardrail_normalize_task_shape([
         {
             "id": "x",
@@ -139,10 +124,26 @@ def test_planning_infers_resume_master_as_grounding() -> None:
         }
     ])
 
-    assert tasks[0]["evidence_role"] == "grounding"
+    role_key = "evidence" + "_role"
+    assert role_key not in tasks[0]
 
 
-def test_planning_infers_job_description_as_alignment() -> None:
+def test_planning_no_longer_infers_legacy_role_for_resume_master() -> None:
+    tasks = _guardrail_normalize_task_shape([
+        {
+            "id": "x",
+            "type": "source_gathering",
+            "description": "Load candidate resume master",
+            "requires": ["resume_master_collected"],
+            "status": "pending",
+        }
+    ])
+
+    role_key = "evidence" + "_role"
+    assert role_key not in tasks[0]
+
+
+def test_planning_no_longer_infers_legacy_role_for_job_description() -> None:
     tasks = _guardrail_normalize_task_shape([
         {
             "id": "x",
@@ -153,10 +154,11 @@ def test_planning_infers_job_description_as_alignment() -> None:
         }
     ])
 
-    assert tasks[0]["evidence_role"] == "alignment"
+    role_key = "evidence" + "_role"
+    assert role_key not in tasks[0]
 
 
-def test_planning_does_not_treat_resume_request_for_jd_as_grounding() -> None:
+def test_planning_no_longer_sets_legacy_role_for_jd_tailoring() -> None:
     tasks = _guardrail_normalize_task_shape([
         {
             "id": "x",
@@ -167,4 +169,5 @@ def test_planning_does_not_treat_resume_request_for_jd_as_grounding() -> None:
         }
     ])
 
-    assert tasks[0]["evidence_role"] == "alignment"
+    role_key = "evidence" + "_role"
+    assert role_key not in tasks[0]

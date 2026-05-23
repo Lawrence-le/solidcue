@@ -152,6 +152,9 @@ def decision_node(state: AgentState) -> dict[str, Any]:
 
     # 1. Build metadata with task context
     metadata = dict(state.get("metadata", {}))
+    # Keep decision prompts lean: planning/discovery-only source maps are not
+    # needed for decision execution once current_task context is resolved.
+    metadata.pop("target_artifacts_source", None)
     metadata["phase"] = phase
     task_plan = state.get("task_plan")
     current_task_id = state.get("current_task", "task_1")

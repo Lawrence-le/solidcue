@@ -178,7 +178,6 @@ def _build_target_artifacts_source(user_input: str) -> list[dict[str, Any]]:
                 "index": idx,
                 "source_type": "url",
                 "source_ref": url,
-                "url": url,
                 "item_key": _item_key_from_url(url),
             }
         )
