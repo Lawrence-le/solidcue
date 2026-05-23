@@ -208,17 +208,67 @@ def _item_key_from_url(url: str) -> str:
     return f"u_{digest}"
 
 
-def _guardrail_assign_item_keys(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _ordinal_index_from_text(text: str) -> int | None:
+    lowered = str(text or "").casefold()
+    mapping = {
+        "first": 1,
+        "second": 2,
+        "third": 3,
+        "fourth": 4,
+        "fifth": 5,
+        "1st": 1,
+        "2nd": 2,
+        "3rd": 3,
+        "4th": 4,
+        "5th": 5,
+    }
+    for token, idx in mapping.items():
+        if token in lowered:
+            return idx
+    return None
+
+
+def _metadata_item_map(metadata: dict[str, Any] | None) -> tuple[dict[int, str], dict[str, str]]:
+    by_index: dict[int, str] = {}
+    by_url: dict[str, str] = {}
+    if not isinstance(metadata, dict):
+        return by_index, by_url
+    items = metadata.get("target_artifacts_source")
+    if not isinstance(items, list):
+        return by_index, by_url
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("item_key") or "").strip()
+        if not key:
+            continue
+        index = item.get("index")
+        if isinstance(index, int) and index > 0:
+            by_index[index] = key
+        url = str(item.get("url") or item.get("source_ref") or "").strip()
+        if url:
+            by_url[url] = key
+    return by_index, by_url
+
+
+def _guardrail_assign_item_keys(
+    tasks: list[dict[str, Any]],
+    metadata: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Ensure each task has a stable `context.item_key`.
 
     Priority:
     1) Keep explicit context.item_key if present.
-    2) Derive from URL-like context fields (stable hash key).
-    3) Inherit the most recent URL-derived/explicit key for adjacent non-URL tasks.
-    4) Fallback to deterministic sequence key.
+    2) Resolve from discovery map via context.source_item_index.
+    3) Resolve from discovery map via URL-like context fields.
+    4) Resolve from discovery map via ordinal wording in task description.
+    5) Derive from URL-like context fields (stable hash key).
+    6) Inherit the most recent URL-derived/explicit key for adjacent non-URL tasks.
+    7) Fallback to deterministic sequence key.
     """
     url_fields = ("posting_url", "url", "jd_url", "job_url")
     url_to_item: dict[str, str] = {}
+    metadata_index_map, metadata_url_map = _metadata_item_map(metadata)
     discovered_keys: list[str] = []
     current_item_key: str | None = None
     fallback_counter = 0
@@ -234,6 +284,13 @@ def _guardrail_assign_item_keys(tasks: list[dict[str, Any]]) -> list[dict[str, A
         item_key = _slug(explicit_key) if explicit_key else ""
 
         if not item_key:
+            index_value = task_context.get("source_item_index")
+            if isinstance(index_value, int):
+                item_key = metadata_index_map.get(index_value, "")
+            elif isinstance(index_value, str) and index_value.strip().isdigit():
+                item_key = metadata_index_map.get(int(index_value.strip()), "")
+
+        if not item_key:
             matched_url = ""
             for field in url_fields:
                 candidate = task_context.get(field)
@@ -241,8 +298,17 @@ def _guardrail_assign_item_keys(tasks: list[dict[str, Any]]) -> list[dict[str, A
                     matched_url = candidate.strip()
                     break
             if matched_url:
-                item_key = url_to_item.get(matched_url) or _item_key_from_url(matched_url)
+                item_key = (
+                    metadata_url_map.get(matched_url)
+                    or url_to_item.get(matched_url)
+                    or _item_key_from_url(matched_url)
+                )
                 url_to_item[matched_url] = item_key
+
+        if not item_key:
+            ordinal_index = _ordinal_index_from_text(task.get("description"))
+            if isinstance(ordinal_index, int):
+                item_key = metadata_index_map.get(ordinal_index, "")
 
         if not item_key and current_item_key:
             item_key = current_item_key
@@ -365,17 +431,20 @@ def _guardrail_normalize_task_shape(tasks: list[dict[str, Any]]) -> list[dict[st
 # Section: planning pipeline helpers
 # ---------------------------------------------------------------------------
 
-def _apply_planning_guardrails(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _apply_planning_guardrails(
+    tasks: list[dict[str, Any]],
+    metadata: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Normalize planner output into canonical runtime shape.
 
     Pipeline (order matters):
     1) Normalize task shape/types/context/requires
     2) Renumber task ids deterministically
-    3) Inject per-item `context.item_key`
+    3) Inject per-item `context.item_key` (using discovery item map when available)
     """
     normalized = _guardrail_normalize_task_shape(tasks)
     renumbered = _guardrail_renumber_task_ids(normalized)
-    with_item_keys = _guardrail_assign_item_keys(renumbered)
+    with_item_keys = _guardrail_assign_item_keys(renumbered, metadata=metadata)
     return with_item_keys
 
 
@@ -462,7 +531,10 @@ def planning_node(state: AgentState) -> dict[str, Any]:
     # Phase 2: build raw task plan from input/model.
     raw_task_plan, metric_planning = _build_task_plan_from_input(state)
     # Phase 3: normalize plan into canonical runtime shape.
-    task_plan = _apply_planning_guardrails(raw_task_plan)
+    task_plan = _apply_planning_guardrails(
+        raw_task_plan,
+        metadata=state.get("metadata") if isinstance(state.get("metadata"), dict) else None,
+    )
 
     # Phase 4: finalize planning state for downstream nodes.
     first_task_id = task_plan[0]["id"] if task_plan else "task_1"

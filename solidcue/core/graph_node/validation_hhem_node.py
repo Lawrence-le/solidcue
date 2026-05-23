@@ -38,7 +38,7 @@ _score_groundedness:
 Run HHEM claim-level groundedness scoring and aggregate metrics.
 
 _build_premise:
-Construct validation premise from context evidence and execution content.
+Construct item-scoped validation premise from handoff payloads.
 
 _llm_verify_failures:
 Optional reviewer-model verification for uncertain/failed claims.
@@ -75,6 +75,9 @@ HHEM_BATCH_SIZE = _positive_int_env("SOLIDCUE_HHEM_BATCH_SIZE", 128)
 LLM_VERIFY_PREMISE_CHARS = _positive_int_env("SOLIDCUE_HHEM_LLM_PREMISE_CHARS", 6000)
 LLM_VERIFY_MAX_TOKENS = _positive_int_env("SOLIDCUE_HHEM_LLM_VERIFY_MAX_TOKENS", 300)
 TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+#.\-]{1,}")
+_PREMISE_MAX_CHARS = 12000
+_PREMISE_ENTRY_MAX_CHARS = 3000
+_TEXT_FIELD_CANDIDATES = ("content", "text", "body", "markdown")
 
 
 def _split_claims(text: str) -> list[str]:
@@ -195,42 +198,79 @@ def _score_groundedness(premise: str, hypothesis: str) -> tuple[float, list[dict
 
 
 def _build_premise(state: AgentState) -> str:
+    def current_task_item_key() -> str | None:
+        task_plan = state.get("task_plan")
+        current_task_id = state.get("current_task")
+        if not isinstance(task_plan, list) or not current_task_id:
+            return None
+        current_task = next((t for t in task_plan if isinstance(t, dict) and t.get("id") == current_task_id), None)
+        if not isinstance(current_task, dict):
+            return None
+        context = current_task.get("context")
+        if not isinstance(context, dict):
+            return None
+        item_key = context.get("item_key")
+        if not isinstance(item_key, str):
+            return None
+        cleaned = item_key.strip()
+        return cleaned or None
+
+    def handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str, Any]:
+        if not item_key:
+            return handoff
+        suffix = f"::{item_key}"
+        scoped: dict[str, Any] = {}
+        for key, value in handoff.items():
+            if isinstance(key, str) and key.endswith(suffix):
+                scoped[key[: -len(suffix)]] = value
+        return scoped or handoff
+
     def extract_text(item: Any) -> str:
         if isinstance(item, str):
             return item.strip()
         if isinstance(item, dict):
-            content = item.get("content")
-            if isinstance(content, str):
-                return content.strip()
-            if isinstance(content, dict):
-                for key in ("content", "text", "body", "markdown"):
-                    value = content.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return value.strip()
-            for key in ("text", "body", "markdown"):
+            for key in _TEXT_FIELD_CANDIDATES:
                 value = item.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
+            for nested in item.values():
+                text = extract_text(nested)
+                if text:
+                    return text
+        if isinstance(item, list):
+            for nested in item:
+                text = extract_text(nested)
+                if text:
+                    return text
         return ""
 
-    context_evidence = state.get("context_evidence")
-    if isinstance(context_evidence, list) and context_evidence:
-        has_role_tagged_evidence = any(
-            isinstance(item, dict) and item.get("evidence_role") in {"grounding", "alignment", "context"}
-            for item in context_evidence
-        )
-        grounding_items = [
-            item
-            for item in context_evidence
-            if isinstance(item, dict) and item.get("evidence_role") == "grounding"
-        ]
-        if grounding_items:
-            return "\n\n".join(text for text in (extract_text(item) for item in grounding_items) if text)
-        if has_role_tagged_evidence:
-            return ""
-        return "\n\n".join(text for text in (extract_text(item) for item in context_evidence) if text)
-    user_input = state.get("user_input")
-    return str(user_input or "")
+    handoff = state.get("handoff")
+    if isinstance(handoff, dict) and handoff:
+        item_key = current_task_item_key()
+        handoff_view = handoff_for_item(handoff, item_key)
+        collected: list[str] = []
+        total_chars = 0
+        for source_key, value in handoff_view.items():
+            if not isinstance(source_key, str):
+                continue
+            if "base64" in source_key.casefold():
+                continue
+            text = extract_text(value)
+            if not text:
+                continue
+            if len(text) > _PREMISE_ENTRY_MAX_CHARS:
+                text = text[:_PREMISE_ENTRY_MAX_CHARS].rstrip() + "… [truncated]"
+            remaining = _PREMISE_MAX_CHARS - total_chars
+            if remaining <= 0:
+                break
+            if len(text) > remaining:
+                text = text[:remaining].rstrip() + "… [truncated]"
+            collected.append(text)
+            total_chars += len(text)
+        if collected:
+            return "\n\n".join(collected)
+
+    return ""
 
 
 def _llm_verify_failures(
@@ -274,7 +314,7 @@ def validation_hhem_node(state: AgentState) -> dict[str, Any]:
     Scores draft groundedness using a heavily optimized short-circuiting local HHEM matrix,
     falling back to an LLM verification layer for anomalies.
     """
-    draft_output = state.get("synthesis_draft") or state.get("draft_output")
+    draft_output = state.get("synthesis_draft")
 
     if not isinstance(draft_output, str) or not draft_output.strip():
         return {

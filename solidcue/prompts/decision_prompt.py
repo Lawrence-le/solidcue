@@ -5,11 +5,44 @@ from solidcue.prompts.decision_system_prompt import build_decision_system_prompt
 from solidcue.agents.configs.loader import load_agent_skill, load_agent_tools
 from solidcue.tools.loader import load_tool
 
+"""
+Decision Prompt Builder
+-----------------------
+
+This module builds the messages sent to the decision LLM.
+It keeps runtime context compact by:
+1) Summarizing tool history with truncation rules
+2) Injecting phase-scoped static guidance (SKILL/TOOLS)
+3) Rendering only the current-task directive and relevant hints
+"""
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_TOOL_DESCRIPTION = "Use this when appropriate."
+
+PHASE_INSTRUCTION: dict[str, str] = {
+    "source": "You MUST use a tool to gather evidence. Responding with a final answer is only valid if no tool can help.",
+    "artifact": "You MUST select the artifact tool to create the output. Do not respond with text.",
+    "synthesis": "Compose a final response from the evidence gathered. No tool use needed.",
+}
+
+PHASE_WITH_SKILL_GUIDANCE = {"artifact", "synthesis"}
+PHASE_WITH_TOOLS_GUIDANCE = {"source", "artifact"}
+
+TIME_LOCATION_DEFAULTS = {
+    "current_time": "Unknown time",
+    "location": "Unknown location",
+    "timezone": "Unknown timezone",
+    "current_time_utc": "Unknown UTC time",
+}
+
 
 def _compact_tool_description(description: str) -> str:
     text = " ".join((description or "").split())
     if not text:
-        return "Use this when appropriate."
+        return DEFAULT_TOOL_DESCRIPTION
     if "." in text:
         text = text.split(".", 1)[0].strip()
     if len(text) > 140:
@@ -62,6 +95,7 @@ _EXPENSIVE_KEYS = {
 }
 _EXPENSIVE_VALUE_MAX_CHARS = 200
 _NORMAL_VALUE_MAX_CHARS = 500
+_PHASE_GUIDANCE_MAX_CHARS = 1500
 
 
 def _truncate_value(key: str, value: Any) -> Any:
@@ -142,11 +176,32 @@ def _format_tool_call_history(tool_call_history: list[dict[str, Any]] | None) ->
 
 def _build_time_location_context(meta: dict[str, Any]) -> dict[str, str]:
     return {
-        "current_time": str(meta.get("current_time", "Unknown time")),
-        "location": str(meta.get("location", "Unknown location")),
-        "timezone": str(meta.get("timezone", "Unknown timezone")),
-        "current_time_utc": str(meta.get("current_time_utc", "Unknown UTC time")),
+        "current_time": str(meta.get("current_time", TIME_LOCATION_DEFAULTS["current_time"])),
+        "location": str(meta.get("location", TIME_LOCATION_DEFAULTS["location"])),
+        "timezone": str(meta.get("timezone", TIME_LOCATION_DEFAULTS["timezone"])),
+        "current_time_utc": str(meta.get("current_time_utc", TIME_LOCATION_DEFAULTS["current_time_utc"])),
     }
+
+
+def _stringify_context_value(value: Any) -> str:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return str(value)
+    return json.dumps(value, ensure_ascii=True, default=str)
+
+
+def _format_task_context(task_context: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for key, value in task_context.items():
+        key_text = str(key).strip()
+        if not key_text:
+            continue
+        lines.append(f"- {key_text}: {_stringify_context_value(value)}")
+    return "\n".join(lines) if lines else "- none"
+
+
+def _phase_instruction_for(meta: dict[str, Any]) -> str:
+    phase = str(meta.get("phase") or "source")
+    return PHASE_INSTRUCTION.get(phase, "Use a tool if evidence is needed, otherwise respond.")
 
 
 def _build_task_guidance(
@@ -160,25 +215,8 @@ def _build_task_guidance(
     task_count = meta.get("total_tasks", 1)
     task_desc = str(current_task.get("description", "No active task"))
     task_context = current_task.get("context") if isinstance(current_task.get("context"), dict) else {}
-
-    context_lines: list[str] = []
-    for key, value in task_context.items():
-        key_text = str(key).strip()
-        if not key_text:
-            continue
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            value_text = str(value)
-        else:
-            value_text = json.dumps(value, ensure_ascii=True, default=str)
-        context_lines.append(f"- {key_text}: {value_text}")
-    task_context_text = "\n".join(context_lines) if context_lines else "- none"
-
-    phase = str(meta.get("phase") or "source")
-    phase_instruction = {
-        "source": "You MUST use a tool to gather evidence. Responding with a final answer is only valid if no tool can help.",
-        "artifact": "You MUST select the artifact tool to create the output. Do not respond with text.",
-        "synthesis": "Compose a final response from the evidence gathered. No tool use needed.",
-    }.get(phase, "Use a tool if evidence is needed, otherwise respond.")
+    task_context_text = _format_task_context(task_context)
+    phase_instruction = _phase_instruction_for(meta)
 
     planned_tool = task_context.get("tool") if isinstance(task_context, dict) else None
     tool_enforcement = ""
@@ -279,26 +317,68 @@ def _append_path_hints(system_prompt: str, meta: dict[str, Any]) -> str:
     return system_prompt
 
 
-def _append_agent_static_guidance(system_prompt: str, agent: Any) -> str:
+def _truncate_guidance(text: str, max_chars: int = _PHASE_GUIDANCE_MAX_CHARS) -> str:
+    cleaned = (text or "").strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[:max_chars].rstrip() + "… [truncated]"
+
+
+def _append_agent_static_guidance(system_prompt: str, agent: Any, phase: str) -> str:
     agent_key = str(getattr(agent, "agent_key", "") or "").strip()
     if not agent_key:
         return system_prompt
 
+    normalized_phase = (phase or "source").strip().casefold()
+    include_skill = normalized_phase in PHASE_WITH_SKILL_GUIDANCE
+    include_tools = normalized_phase in PHASE_WITH_TOOLS_GUIDANCE
+
     skill_guidance = load_agent_skill(agent_key)
-    if skill_guidance:
+    if include_skill and skill_guidance:
+        skill_text = _truncate_guidance(skill_guidance)
         system_prompt += (
-            "\n\nSkill guidance:\n"
+            f"\n\nSkill guidance (phase={normalized_phase}):\n"
             "Follow these skill-level rules for output format, naming, and execution behavior.\n"
-            f"{skill_guidance}"
+            f"{skill_text}"
         )
+
     tools_guidance = load_agent_tools(agent_key)
-    if tools_guidance:
+    if include_tools and tools_guidance:
+        tools_text = _truncate_guidance(tools_guidance)
         system_prompt += (
-            "\n\nTools routing guidance:\n"
+            f"\n\nTools routing guidance (phase={normalized_phase}):\n"
             "Follow these tool-selection rules when choosing retrieval and artifact actions.\n"
-            f"{tools_guidance}"
+            f"{tools_text}"
         )
     return system_prompt
+
+
+def _build_tool_descriptions(tools: list[str]) -> str:
+    tool_lines: list[str] = []
+    for tool_key in tools:
+        try:
+            tool_config = load_tool(tool_key)
+            description = _compact_tool_description(tool_config.description.strip())
+            schema = getattr(getattr(tool_config, "mcp", None), "input_schema", None)
+            properties = schema.get("properties") if isinstance(schema, dict) else None
+            required_set = set(schema.get("required", [])) if isinstance(schema, dict) else set()
+
+            if isinstance(properties, dict) and properties:
+                param_lines = [
+                    _format_parameter(name, prop, name in required_set)
+                    for name, prop in properties.items()
+                    if isinstance(prop, dict)
+                ]
+                tool_lines.append(
+                    f"- {tool_key}: {description}\n"
+                    f"  Parameters:\n" + "\n".join(param_lines)
+                )
+            else:
+                tool_lines.append(f"- {tool_key}: {description}")
+        except Exception:
+            tool_lines.append(f"- {tool_key}: {DEFAULT_TOOL_DESCRIPTION}")
+
+    return "\n".join(tool_lines)
 
 
 def _append_run_state_overrides(
@@ -359,34 +439,10 @@ def build_decision_messages(
 ):
     tools = list(agent.tools or [])
     meta = metadata if isinstance(metadata, dict) else {}
+    phase = str(meta.get("phase") or "source")
     current_task = meta.get("current_task") if isinstance(meta.get("current_task"), dict) else {}
     current_task_type = str(current_task.get("type") or "")
-
-    tool_lines: list[str] = []
-    for tool_key in tools:
-        try:
-            tool_config = load_tool(tool_key)
-            description = _compact_tool_description(tool_config.description.strip())
-            schema = getattr(getattr(tool_config, "mcp", None), "input_schema", None)
-            properties = schema.get("properties") if isinstance(schema, dict) else None
-            required_set = set(schema.get("required", [])) if isinstance(schema, dict) else set()
-
-            if isinstance(properties, dict) and properties:
-                param_lines = [
-                    _format_parameter(name, prop, name in required_set)
-                    for name, prop in properties.items()
-                    if isinstance(prop, dict)
-                ]
-                tool_lines.append(
-                    f"- {tool_key}: {description}\n"
-                    f"  Parameters:\n" + "\n".join(param_lines)
-                )
-            else:
-                tool_lines.append(f"- {tool_key}: {description}")
-        except Exception:
-            tool_lines.append(f"- {tool_key}: Use this when appropriate.")
-
-    tool_descriptions = "\n".join(tool_lines)
+    tool_descriptions = _build_tool_descriptions(tools)
     time_location_context = _build_time_location_context(meta)
     task_guidance = _build_task_guidance(
         meta=meta,
@@ -400,7 +456,7 @@ def build_decision_messages(
         agent_description=agent.description,
         tool_descriptions=tool_descriptions,
     )
-    system_prompt = _append_agent_static_guidance(system_prompt, agent)
+    system_prompt = _append_agent_static_guidance(system_prompt, agent, phase)
     runtime_context = _build_runtime_context_message(
         time_location_context=time_location_context,
         task_guidance=task_guidance,

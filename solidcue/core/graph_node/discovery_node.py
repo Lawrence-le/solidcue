@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 from typing import Any
 
 from solidcue.agents.configs.loader import load_agent, load_agent_skill, load_agent_tools
@@ -143,6 +145,47 @@ def _extract_paths_with_llm(
 
 
 # ---------------------------------------------------------------------------
+# Section: source-item mapping helpers
+# ---------------------------------------------------------------------------
+
+
+def _item_key_from_url(url: str) -> str:
+    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
+    return f"u_{digest}"
+
+
+def _extract_urls_from_input(user_input: str) -> list[str]:
+    if not isinstance(user_input, str) or not user_input.strip():
+        return []
+    pattern = re.compile(r"https?://[^\s)>\"']+")
+    raw_urls = pattern.findall(user_input)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for url in raw_urls:
+        normalized = url.strip().rstrip(".,;:!?)]")
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            deduped.append(normalized)
+    return deduped
+
+
+def _build_target_artifacts_source(user_input: str) -> list[dict[str, Any]]:
+    urls = _extract_urls_from_input(user_input)
+    items: list[dict[str, Any]] = []
+    for idx, url in enumerate(urls, start=1):
+        items.append(
+            {
+                "index": idx,
+                "source_type": "url",
+                "source_ref": url,
+                "url": url,
+                "item_key": _item_key_from_url(url),
+            }
+        )
+    return items
+
+
+# ---------------------------------------------------------------------------
 # Section: core node
 # ---------------------------------------------------------------------------
 
@@ -177,16 +220,19 @@ def discovery_node(state: AgentState) -> dict[str, Any]:
     )
     # Phase 4: merge discovery artifacts into metadata.
     metadata = dict(state.get("metadata", {}))
+    target_artifacts_source = _build_target_artifacts_source(str(state.get("user_input") or ""))
     metadata["source_paths"] = source_paths
     metadata["output_paths"] = output_paths
     metadata["source_filenames"] = source_filenames
     metadata["output_filenames"] = output_filenames
+    metadata["target_artifacts_source"] = target_artifacts_source
 
     return {
         "source_paths": source_paths,
         "output_paths": output_paths,
         "source_filenames": source_filenames,
         "output_filenames": output_filenames,
+        "target_artifacts_source": target_artifacts_source,
         "metadata": metadata,
         **build_metric_state_delta("discovery", "metric_discovery", metric_discovery),
     }

@@ -28,6 +28,7 @@ Merge token usage/time/model stats from sub-steps.
 
 _evidence_signature / _append_context_evidence:
 Deduplicate and append evidence entries into `context_evidence`.
+Each stored entry includes task-scoping metadata (`task_id`, `item_key`).
 
 _has_substantial_text / _effective_evidence_role:
 Determine whether content is useful and classify evidence role.
@@ -436,9 +437,19 @@ def reflection_node(state: AgentState) -> dict[str, Any]:
         return update
 
     task_id = state.get("current_task") or "unknown"
+    item_key: str | None = None
+    if isinstance(task_plan, list) and current_task_id:
+        current_task = next((t for t in task_plan if isinstance(t, dict) and t.get("id") == current_task_id), None)
+        if isinstance(current_task, dict):
+            task_context = current_task.get("context")
+            if isinstance(task_context, dict):
+                item_key_val = task_context.get("item_key")
+                if isinstance(item_key_val, str) and item_key_val.strip():
+                    item_key = item_key_val.strip()
 
     new_entry = {
         "task_id": task_id,
+        "item_key": item_key or "",
         "evidence_role": _effective_evidence_role(evidence_role, tool_name, content),
         "tool_name": tool_name if isinstance(tool_name, str) else "",
         "content": content,

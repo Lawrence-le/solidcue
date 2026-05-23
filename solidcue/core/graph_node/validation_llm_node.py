@@ -26,8 +26,14 @@ Parse validator raw output into JSON object safely.
 _parse_validator_response:
 Normalize validator output into `{passed, reason, score}`.
 
+_current_task_item_key:
+Resolve current task item scope key for multi-item evidence filtering.
+
+_handoff_for_item / _build_validation_evidence_from_handoff:
+Build bounded, item-scoped validation evidence from handoff payloads.
+
 _llm_validate:
-Run reviewer-model validation against evidence and draft output.
+Run reviewer-model validation against item-scoped handoff evidence and draft output.
 
 _artifact_has_delivery_id:
 Check artifact payload for concrete delivery/upload identifiers.
@@ -54,6 +60,9 @@ CONTROL_TOKEN_FRAGMENTS = (
     "commentary<|channel|>",
     "analysis<|message|>",
 )
+_VALIDATION_EVIDENCE_MAX_CHARS = 12000
+_VALIDATION_ENTRY_MAX_CHARS = 3000
+_TEXT_FIELD_CANDIDATES = ("content", "text", "body", "markdown")
 
 def _fail(
     failure_type: str,
@@ -112,6 +121,98 @@ def _parse_validator_response(raw_output: str) -> dict[str, Any] | None:
     return {"passed": passed, "reason": reason, "score": score}
 
 
+def _current_task_item_key(state: AgentState) -> str | None:
+    task_plan = state.get("task_plan")
+    current_task_id = state.get("current_task")
+    if not isinstance(task_plan, list) or not current_task_id:
+        return None
+    current_task = next((t for t in task_plan if isinstance(t, dict) and t.get("id") == current_task_id), None)
+    if not isinstance(current_task, dict):
+        return None
+    context = current_task.get("context")
+    if not isinstance(context, dict):
+        return None
+    item_key = context.get("item_key")
+    if not isinstance(item_key, str):
+        return None
+    cleaned = item_key.strip()
+    return cleaned or None
+
+
+def _handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str, Any]:
+    """Prefer handoff entries scoped to current item via `::<item_key>` suffix."""
+    if not item_key:
+        return handoff
+    suffix = f"::{item_key}"
+    scoped: dict[str, Any] = {}
+    for key, value in handoff.items():
+        if not isinstance(key, str):
+            continue
+        if key.endswith(suffix):
+            scoped[key[: -len(suffix)]] = value
+    return scoped or handoff
+
+
+def _extract_text_from_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in _TEXT_FIELD_CANDIDATES:
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        for nested in value.values():
+            text = _extract_text_from_value(nested)
+            if text:
+                return text
+    if isinstance(value, list):
+        for item in value:
+            text = _extract_text_from_value(item)
+            if text:
+                return text
+    return ""
+
+
+def _build_validation_evidence_from_handoff(state: AgentState) -> list[dict[str, Any]]:
+    """Create bounded validation evidence from item-scoped handoff payloads."""
+    handoff = state.get("handoff")
+    if not isinstance(handoff, dict) or not handoff:
+        return []
+
+    item_key = _current_task_item_key(state)
+    handoff_view = _handoff_for_item(handoff, item_key)
+    evidence: list[dict[str, Any]] = []
+    total_chars = 0
+
+    for source_key, value in handoff_view.items():
+        if not isinstance(source_key, str):
+            continue
+        if "base64" in source_key.casefold():
+            continue
+
+        text = _extract_text_from_value(value)
+        if not text:
+            continue
+        if len(text) > _VALIDATION_ENTRY_MAX_CHARS:
+            text = text[:_VALIDATION_ENTRY_MAX_CHARS].rstrip() + "… [truncated]"
+        remaining = _VALIDATION_EVIDENCE_MAX_CHARS - total_chars
+        if remaining <= 0:
+            break
+        if len(text) > remaining:
+            text = text[:remaining].rstrip() + "… [truncated]"
+        evidence.append(
+            {
+                "source_key": source_key,
+                "item_key": item_key or "",
+                "evidence_role": "grounding",
+                "content": text,
+            }
+        )
+        total_chars += len(text)
+
+    return evidence
+
+
 def _llm_validate(state: AgentState, draft_output: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     agent_key = state.get("agent_key")
     if not isinstance(agent_key, str) or not agent_key:
@@ -120,23 +221,7 @@ def _llm_validate(state: AgentState, draft_output: str) -> tuple[dict[str, Any] 
     try:
         agent = load_agent(agent_key)
         provider = get_provider_for_role(agent, "reviewer")
-        context_evidence = state.get("context_evidence")
-        evidence_for_validation: list[dict[str, Any]] = []
-        if isinstance(context_evidence, list):
-            role_tagged = [
-                item
-                for item in context_evidence
-                if isinstance(item, dict)
-                and item.get("evidence_role") in {"grounding", "alignment", "context"}
-            ]
-            if role_tagged:
-                evidence_for_validation = [
-                    item
-                    for item in role_tagged
-                    if item.get("evidence_role") in {"grounding", "alignment"}
-                ]
-            else:
-                evidence_for_validation = [item for item in context_evidence if isinstance(item, dict)]
+        evidence_for_validation = _build_validation_evidence_from_handoff(state)
         task_description = ""
         task_plan = state.get("task_plan")
         current_task_id = state.get("current_task")
@@ -173,7 +258,7 @@ def validation_llm_node(state: AgentState) -> dict[str, Any]:
     Emits only failure_type + validation_report. Router owns retry counters and
     dispatch; validation never routes.
     """
-    draft_output = state.get("synthesis_draft") or state.get("draft_output")
+    draft_output = state.get("synthesis_draft")
     metric_validation: dict[str, Any] = {}
 
     if not isinstance(draft_output, str):

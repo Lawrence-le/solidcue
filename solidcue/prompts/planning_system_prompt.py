@@ -26,7 +26,7 @@ Choose ONE type per task:
 
 2. **synthesis** — Produce user-facing content (drafts, written deliverables).
    - For: transforming raw data into polished content using creative judgment.
-   - MUST include `skill_section` in context (the `# [SECTION]` heading name in Skill Guidance).
+   - MUST include `follow_skill_section` in context (the `# [SECTION]` heading name in Skill Guidance).
    - NOT for data extraction, field mapping, or building tool inputs.
 
 3. **artifact_generation** — Create, prepare, or deliver final output.
@@ -97,11 +97,21 @@ For every task, define these fields in order:
 - Keep task context lean: tool name, IDs, paths, URLs, SKILL.md section references.
 
 ## 5.4 Synthesis Granularity
-- Each synthesis task produces ONE deliverable scoped to its `skill_section`.
+- Each synthesis task produces ONE deliverable scoped to its `follow_skill_section`.
 - exactly ONE synthesis task per final deliverable unless independently verifiable outputs are required.
 - Do NOT combine unrelated outputs into one synthesis task.
 - Split synthesis only when each split has an independently verifiable output state.
 - Do NOT create process-only synthesis like "analyze", "brainstorm", or "refine" without concrete output.
+
+## 5.6 Multi-Item Source Binding (Deterministic)
+- If the user request contains multiple source items (e.g., multiple URLs), every synthesis/artifact task tied to a specific item MUST include explicit source binding in context.
+- Preferred binding field: `context.source_item_index` (1-based index of source item in user request order).
+- Optional additional binding: `context.source_ref` (URL or stable source reference string).
+- Do NOT rely on implicit or inherited source mapping for synthesis/artifact tasks.
+- Examples:
+- ✓ `"context": {"tool": "create_formatted_word_document_base64", "source_item_index": 1, "follow_skill_section": "Re-construction Output Format"}`
+- ✓ `"context": {"tool": "drive_upload_file", "source_item_index": 2}`
+- ✗ Artifact task with no source binding in a multi-item request.
 
 ## 5.5 Evidence Role Rules
 - Use `evidence_role` only for source_gathering tasks.
@@ -121,6 +131,7 @@ Before submitting the plan, verify:
 3. **Output check**: Does every `requires` describe what THAT task's tool produces?
 4. **Delegation check**: Are any column/field/format specs duplicated from Skill Guidance? If yes, replace with `follow_skill_section` reference.
 5. **Format check**: Are all `requires` in `snake_case` Noun+Past Participle? No imperatives.
+6. **Multi-item binding check**: If multiple source items exist, does every synthesis/artifact task include `source_item_index` (or equivalent explicit source reference)?
 
 ================================================================================
 # FORBIDDEN PATTERNS (NEVER OUTPUT THESE)
