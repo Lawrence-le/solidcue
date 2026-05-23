@@ -30,6 +30,9 @@ Build deterministic fallback final response from execution/validation state.
 _compact_successful_tool_history:
 Compact recent successful tool calls into concise summary lines.
 
+_task_item_key_map / _uploaded_artifacts_by_item:
+Build deterministic per-item artifact completion summary from upload tool results.
+
 _llm_compose_user_facing_output:
 Generate polished final response via model using current state context.
 
@@ -120,7 +123,7 @@ def _build_fallback_output(state: AgentState) -> str:
     return "I couldn't generate a final response for this request."
 
 
-def _compact_successful_tool_history(state: AgentState, max_entries: int = 8) -> list[dict[str, Any]]:
+def _compact_successful_tool_history(state: AgentState) -> list[dict[str, Any]]:
     history = state.get("tool_call_history")
     if not isinstance(history, list) or not history:
         return []
@@ -143,9 +146,60 @@ def _compact_successful_tool_history(state: AgentState, max_entries: int = 8) ->
             }
         )
 
-    if len(successful_entries) <= max_entries:
-        return successful_entries
-    return successful_entries[-max_entries:]
+    return successful_entries
+
+
+def _task_item_key_map(state: AgentState) -> dict[str, str]:
+    task_plan = state.get("task_plan")
+    if not isinstance(task_plan, list):
+        return {}
+
+    mapping: dict[str, str] = {}
+    for task in task_plan:
+        if not isinstance(task, dict):
+            continue
+        task_id = task.get("id")
+        context = task.get("context")
+        if not isinstance(task_id, str) or not isinstance(context, dict):
+            continue
+        item_key = context.get("item_key")
+        if isinstance(item_key, str) and item_key.strip():
+            mapping[task_id] = item_key.strip()
+    return mapping
+
+
+def _uploaded_artifacts_by_item(state: AgentState) -> list[dict[str, Any]]:
+    history = state.get("tool_call_history")
+    if not isinstance(history, list) or not history:
+        return []
+
+    item_by_task = _task_item_key_map(state)
+    uploads: dict[str, dict[str, Any]] = {}
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("tool_name") != "drive_upload_file":
+            continue
+        execution_result = entry.get("execution_result")
+        if not isinstance(execution_result, dict) or execution_result.get("success") is not True:
+            continue
+
+        task_id = entry.get("task_id")
+        item_key = item_by_task.get(task_id) if isinstance(task_id, str) else ""
+        if not item_key:
+            continue
+
+        content = execution_result.get("content")
+        if not isinstance(content, dict):
+            continue
+        uploads[item_key] = {
+            "item_key": item_key,
+            "file_id": content.get("id"),
+            "name": content.get("name"),
+            "webViewLink": content.get("webViewLink"),
+        }
+
+    return list(uploads.values())
 
 
 def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict[str, Any]]:
@@ -157,9 +211,18 @@ def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict
     if not successful_tool_history:
         return None, {}
 
+    target_artifacts_source = []
+    metadata = state.get("metadata")
+    if isinstance(metadata, dict):
+        raw_sources = metadata.get("target_artifacts_source")
+        if isinstance(raw_sources, list):
+            target_artifacts_source = raw_sources
+
     payload = {
         "user_input": str(state.get("user_input") or ""),
         "successful_tool_calls": successful_tool_history,
+        "target_artifacts_source": target_artifacts_source,
+        "uploaded_artifacts_by_item": _uploaded_artifacts_by_item(state),
     }
 
     try:
