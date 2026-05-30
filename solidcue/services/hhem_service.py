@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from solidcue.utils.env import get_env_path
+from solidcue.observability import get_env_path
 
 HHEM_MODEL_ID = "vectara/hallucination_evaluation_model"
 MODELS_DIR = Path(__file__).resolve().parents[1] / "models" / "hhem"

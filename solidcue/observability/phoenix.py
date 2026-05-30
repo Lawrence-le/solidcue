@@ -2,40 +2,17 @@ import os
 from threading import Lock
 from typing import Any
 
+from .common import is_truthy, to_primitive
+
 _TRACING_BOOTSTRAPPED = False
 _TRACING_LOCK = Lock()
-
-
-def _is_truthy(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _to_primitive(value: Any) -> bool | int | float | str:
-    if isinstance(value, (bool, int, float, str)):
-        return value
-    return str(value)
 
 
 def is_phoenix_enabled() -> bool:
     explicit = os.getenv("SOLIDCUE_PHOENIX_ENABLED")
     if explicit is not None:
-        return _is_truthy(explicit)
-    return _is_truthy(os.getenv("PHOENIX_ENABLED"))
-
-
-def is_langsmith_enabled() -> bool:
-    explicit = os.getenv("SOLIDCUE_LANGSMITH_ENABLED")
-    if explicit is not None:
-        return _is_truthy(explicit)
-    return _is_truthy(os.getenv("LANGSMITH_TRACING"))
-
-
-def configure_langsmith_tracing_env() -> None:
-    # Ensure runtime behavior follows SolidCue-level toggle even when LANGSMITH_TRACING
-    # is inherited from parent shell/profile.
-    os.environ["LANGSMITH_TRACING"] = "true" if is_langsmith_enabled() else "false"
+        return is_truthy(explicit)
+    return is_truthy(os.getenv("PHOENIX_ENABLED"))
 
 
 def ensure_phoenix_tracing() -> None:
@@ -93,5 +70,5 @@ def trace_langgraph_invoke(
     tracer = trace.get_tracer("solidcue.langgraph")
     with tracer.start_as_current_span(span_name) as span:
         for key, value in attributes.items():
-            span.set_attribute(key, _to_primitive(value))
+            span.set_attribute(key, to_primitive(value))
         return invoke()

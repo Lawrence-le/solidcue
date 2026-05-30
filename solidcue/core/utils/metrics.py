@@ -4,6 +4,7 @@ import math
 import time
 from typing import Any
 
+from solidcue.observability import end_langfuse_generation, start_langfuse_generation
 
 _CHAT_MESSAGE_OVERHEAD = 4
 _CHAT_REPLY_PRIMING = 2
@@ -108,11 +109,36 @@ def timed_generate(
     provider: Any,
     messages: list[dict[str, Any]],
     *,
+    node_name: str = "llm",
     max_tokens: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     estimated_stats = estimate_message_tokens(messages)
+    model_name = _provider_model(provider)
+    model_parameters: dict[str, Any] = {}
+    temperature = getattr(provider, "temperature", None)
+    if isinstance(temperature, (int, float)):
+        model_parameters["temperature"] = float(temperature)
+    if isinstance(max_tokens, int) and max_tokens > 0:
+        model_parameters["max_tokens"] = max_tokens
+
+    generation = start_langfuse_generation(
+        name=node_name,
+        input_payload=messages,
+        model=model_name,
+        model_parameters=model_parameters,
+    )
+
     started = time.perf_counter()
-    output = provider.generate(messages, max_tokens=max_tokens)
+    try:
+        output = provider.generate(messages, max_tokens=max_tokens)
+    except Exception as exc:
+        end_langfuse_generation(
+            generation,
+            output_payload="",
+            metadata={"error": str(exc)},
+        )
+        raise
+
     elapsed_s = time.perf_counter() - started
 
     output_tokens = _CHAT_MESSAGE_OVERHEAD + estimate_text_tokens(output or "")
@@ -138,7 +164,26 @@ def timed_generate(
             }
         )
 
-    return output, build_metric(token_stats, elapsed_s, _provider_model(provider))
+    usage_details = {
+        "input": int(token_stats.get("prompt_tokens") or 0),
+        "output": int(token_stats.get("completion_tokens") or 0),
+        "total": int(token_stats.get("total_tokens") or 0),
+    }
+    cached_tokens = int(token_stats.get("cached_tokens") or 0)
+    if cached_tokens > 0:
+        usage_details["cached"] = cached_tokens
+
+    end_langfuse_generation(
+        generation,
+        output_payload=output,
+        usage_details=usage_details,
+        metadata={
+            "metric_method": str(token_stats.get("method") or ""),
+            "time_s": elapsed_s,
+        },
+    )
+
+    return output, build_metric(token_stats, elapsed_s, model_name)
 
 
 def build_metric_state_delta(node: str, metric_key: str, metric: dict[str, Any] | None) -> dict[str, Any]:

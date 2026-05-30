@@ -316,7 +316,7 @@ def synthesis_node(state: AgentState) -> dict[str, Any]:
             skill_text=skill_for_synthesis,
             task_description=task_description,
         )
-        polished, metric_synthesis = timed_generate(provider, messages)
+        polished, metric_synthesis = timed_generate(provider, messages, node_name="synthesis")
         polished_text = str(polished or "").strip()
 
         # Safety fallback: if generation looks invalid, preserve source material.

@@ -61,7 +61,7 @@ def _llm_check_requires_met(
             requires=requires,
             execution_result=result_str,
         )
-        response, metric = timed_generate(provider, messages)
+        response, metric = timed_generate(provider, messages, node_name="reflection")
         token_stats = dict(metric.get("tokens") or {})
         token_stats["time_s"] = float(metric.get("time_s") or 0.0)
         token_stats["model"] = str(metric.get("model") or "")

@@ -100,7 +100,7 @@ def _extract_paths_with_llm(
     ]
 
     try:
-        raw_output, metric_discovery = timed_generate(provider, messages)
+        raw_output, metric_discovery = timed_generate(provider, messages, node_name="discovery")
     except Exception:
         return [], [], [], [], {}
 

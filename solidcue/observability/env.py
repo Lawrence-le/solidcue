@@ -19,7 +19,7 @@ def generate_env_key(agent_key: str) -> str:
     return f"{agent_key.upper()}_API_KEY"
 
 
-def write_env_key(env_key: str, value: str):
+def write_env_key(env_key: str, value: str) -> None:
     normalized = value.strip()
     if not normalized:
         raise ValueError("API key cannot be empty")

@@ -5,6 +5,8 @@
 ![License](https://img.shields.io/badge/License-MIT-blue)
 ![LangGraph](https://img.shields.io/badge/Framework-LangGraph-0EA5E9)
 ![Arize Phoenix](https://img.shields.io/badge/Observability-Arize%20Phoenix-16A34A)
+![Langfuse](https://img.shields.io/badge/Observability-Langfuse-1F2937)
+![LangSmith](https://img.shields.io/badge/Observability-LangSmith-0F172A)
 ![MCP](https://img.shields.io/badge/Tools-MCP-111827)
 ![Python](https://img.shields.io/badge/Language-Python%203.12%2B-3776AB?logo=python&logoColor=white)
 ![uv](https://img.shields.io/badge/Package%20Manager-uv-2E3440)
@@ -25,12 +27,12 @@ relevant tools, plans an approach, decides on actions, executes tool calls,
 reflects on results, validates output quality, and synthesizes a final response,
 with routing logic that loops back through stages when gaps are detected.
 
-Observability is supported through Arize Phoenix and LangSmith tracing,
+Observability is supported through Arize Phoenix, LangSmith, and Langfuse,
 individually or together.
 
 ## Keywords
 
-AI agents, agent orchestration, LangGraph, Arize Phoenix, LangSmith,
+AI agents, agent orchestration, LangGraph, Arize Phoenix, LangSmith, Langfuse,
 Model Context Protocol, MCP, AI CLI, LLM tools, OpenAI-compatible API,
 Anthropic Claude, OpenRouter, YAML agent configuration, Python agent framework.
 
@@ -42,7 +44,7 @@ Anthropic Claude, OpenRouter, YAML agent configuration, Python agent framework.
 - Define agent role and tone through PERSONA.md
 - Define domain expertise and task knowledge through SKILL.md
 - Define tool usage guidance and preferences through TOOLS.md
-- Trace full LangGraph runs in Arize Phoenix or LangSmith when debugging or evaluating behavior
+- Trace full LangGraph runs in Arize Phoenix, LangSmith, or Langfuse when debugging or evaluating behavior
 
 ## Architecture Overview
 
@@ -115,7 +117,7 @@ SolidCue includes an MCP client that communicates with external MCP servers usin
   - OpenRouter
 - User profile management (location, timezone, display name, preferences)
 - Debug mode for inspecting agent config and per-node metric/token usage summary
-- Observability through Arize Phoenix and LangSmith tracing
+- Observability through Arize Phoenix, LangSmith, and Langfuse tracing
 
 ## LLM Providers
 
@@ -284,7 +286,7 @@ Override with:
 SOLIDCUE_ENV_PATH=.env.local uv run cli create-agent
 ```
 
-## Tracing (LangSmith + Arize Phoenix)
+## Tracing (Langfuse + LangSmith + Arize Phoenix)
 
 Start Phoenix locally:
 
@@ -308,17 +310,30 @@ export SOLIDCUE_PHOENIX_ENABLED=true
 
 # LangSmith on/off
 export SOLIDCUE_LANGSMITH_ENABLED=false
+
+# Langfuse on/off
+export SOLIDCUE_LANGFUSE_ENABLED=false
 ```
 
 Common setups:
 
 ```bash
+# Langfuse only
+export SOLIDCUE_LANGFUSE_ENABLED=true
+export SOLIDCUE_LANGSMITH_ENABLED=false
+export SOLIDCUE_PHOENIX_ENABLED=false
+export LANGFUSE_PUBLIC_KEY=pk-lf-your_public_key
+export LANGFUSE_SECRET_KEY=sk-lf-your_secret_key
+export LANGFUSE_BASE_URL=http://localhost:3000
+
 # Phoenix only
 export SOLIDCUE_PHOENIX_ENABLED=true
+export SOLIDCUE_LANGFUSE_ENABLED=false
 export SOLIDCUE_LANGSMITH_ENABLED=false
 
 # LangSmith only
 export SOLIDCUE_PHOENIX_ENABLED=false
+export SOLIDCUE_LANGFUSE_ENABLED=false
 export SOLIDCUE_LANGSMITH_ENABLED=true
 export LANGSMITH_API_KEY=your_langsmith_api_key
 export LANGSMITH_PROJECT=solidcue
@@ -326,12 +341,17 @@ export LANGSMITH_PROJECT=solidcue
 # Both enabled
 export SOLIDCUE_PHOENIX_ENABLED=true
 export SOLIDCUE_LANGSMITH_ENABLED=true
+export SOLIDCUE_LANGFUSE_ENABLED=true
 export LANGSMITH_API_KEY=your_langsmith_api_key
 export LANGSMITH_PROJECT=solidcue
+export LANGFUSE_PUBLIC_KEY=pk-lf-your_public_key
+export LANGFUSE_SECRET_KEY=sk-lf-your_secret_key
+export LANGFUSE_BASE_URL=http://localhost:3000
 
 # Disable all tracing
 export SOLIDCUE_PHOENIX_ENABLED=false
 export SOLIDCUE_LANGSMITH_ENABLED=false
+export SOLIDCUE_LANGFUSE_ENABLED=false
 ```
 
 Run as usual:
@@ -345,6 +365,12 @@ For a custom collector or hosted Phoenix endpoint, set:
 ```bash
 export PHOENIX_COLLECTOR_ENDPOINT=https://your-phoenix-endpoint/v1/traces
 ```
+
+Langfuse notes:
+
+- SolidCue attaches Langfuse callbacks from `solidcue/services/agent_service.py`.
+- Per-node LLM calls are recorded as Langfuse `generation` observations via `solidcue/core/utils/metrics.py` (`timed_generate`).
+- Token/cost views in Langfuse require provider-reported usage fields and model pricing configuration in Langfuse.
 
 ## Optional Global `solidcue` Command (macOS/zsh)
 

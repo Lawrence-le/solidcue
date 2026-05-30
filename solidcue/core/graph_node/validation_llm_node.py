@@ -239,7 +239,11 @@ def _llm_validate(state: AgentState, draft_output: str) -> tuple[dict[str, Any] 
             validation_evidence=evidence_for_validation,
             task_description=task_description,
         )
-        raw_output, metric_validation = timed_generate(provider, messages)
+        raw_output, metric_validation = timed_generate(
+            provider,
+            messages,
+            node_name="validation",
+        )
         return _parse_validator_response(str(raw_output or "")), metric_validation
     except Exception:
         return None, {}

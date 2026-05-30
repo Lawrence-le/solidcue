@@ -166,7 +166,7 @@ def test_llm_validation_uses_handoff_scoped_evidence(monkeypatch) -> None:
     monkeypatch.setattr(
         validation_module,
         "timed_generate",
-        lambda _provider, _messages: ('{"passed": true, "reason": "ok", "score": 1.0}', {}),
+        lambda _provider, _messages, **_kwargs: ('{"passed": true, "reason": "ok", "score": 1.0}', {}),
     )
 
     result = validation_node(

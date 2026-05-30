@@ -73,7 +73,7 @@ def classifier_node(state: AgentState) -> dict[str, Any]:
     )
 
     provider = get_provider_for_role(agent, "lite")
-    response_text, metric_stats = timed_generate(provider, messages)
+    response_text, metric_stats = timed_generate(provider, messages, node_name="classifier")
 
     parsed = _extract_json_object(str(response_text or ""))
     intent = parsed.get("intent") if isinstance(parsed, dict) else None

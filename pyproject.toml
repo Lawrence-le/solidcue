@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.28.1",
     "inquirerpy>=0.3.4",
     "langchain>=1.2.15",
+    "langfuse>=4.7.0",
     "langgraph>=1.1.10",
     "langgraph-checkpoint-sqlite>=3.0.0",
     "markdown-it-py>=4.0.0",

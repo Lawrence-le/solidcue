@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from solidcue.services.hhem_service import load_hhem_model
 from solidcue.core.state.schema import AgentState
-from solidcue.utils.env import get_env_path
+from solidcue.observability import get_env_path
 
 """
 Initialize Node - Function Overview

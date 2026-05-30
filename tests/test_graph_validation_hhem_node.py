@@ -206,8 +206,9 @@ def test_llm_verify_uses_max_tokens_cap(monkeypatch):
         lambda _agent, _role: Provider(),
     )
 
-    def fake_timed_generate(provider, messages, *, max_tokens=None):
+    def fake_timed_generate(provider, messages, *, node_name="llm", max_tokens=None):
         captured["max_tokens"] = max_tokens
+        captured["node_name"] = node_name
         return '{"real_failures": [], "reason": "ok"}', {"tokens": {}, "time_s": 0.0, "model": "test-model"}
 
     monkeypatch.setattr(
@@ -224,6 +225,7 @@ def test_llm_verify_uses_max_tokens_cap(monkeypatch):
     )
 
     assert real_failures == []
+    assert captured["node_name"] == "validation_hhem"
     assert captured["max_tokens"] == 300
 
 

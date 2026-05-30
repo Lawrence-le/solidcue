@@ -294,7 +294,12 @@ def _llm_verify_failures(
     claims_text = "\n".join(f'- "{c["claim"]}" (score: {c["score"]:.2f})' for c in claims_to_verify)
     messages = build_hhem_verify_messages(claims_text)
 
-    raw_output, metric = timed_generate(provider, messages, max_tokens=LLM_VERIFY_MAX_TOKENS)
+    raw_output, metric = timed_generate(
+        provider,
+        messages,
+        node_name="validation_hhem",
+        max_tokens=LLM_VERIFY_MAX_TOKENS,
+    )
     raw = str(raw_output or "").strip()
 
     try:

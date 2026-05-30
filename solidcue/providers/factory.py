@@ -7,7 +7,7 @@ from solidcue.providers.base import BaseProvider
 from solidcue.providers.anthropic import AnthropicProvider
 from solidcue.providers.openai_compatible import OpenAICompatibleProvider
 from solidcue.providers.openrouter import OpenRouterProvider
-from solidcue.utils.env import get_env_path
+from solidcue.observability import get_env_path
 
 load_dotenv(dotenv_path=get_env_path())
 

@@ -110,7 +110,7 @@ def _llm_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             tools_guidance=load_agent_tools(agent_key),
             metadata=state.get("metadata") if isinstance(state.get("metadata"), dict) else {},
         )
-        response_text, metric_stats = timed_generate(provider, messages)
+        response_text, metric_stats = timed_generate(provider, messages, node_name="planning")
         logger.debug("planning LLM raw response (type=%s): %s", type(response_text).__name__, repr(response_text)[:500])
 
         parsed = _extract_json_object(str(response_text or ""))
@@ -465,7 +465,7 @@ def _conversational_response(state: AgentState) -> dict[str, Any]:
     ]
 
     provider = get_provider_for_role(agent, "lite")
-    response_text, metric_stats = timed_generate(provider, messages)
+    response_text, metric_stats = timed_generate(provider, messages, node_name="planning")
 
     return {
         "phase": "conversational",

@@ -14,8 +14,13 @@ from solidcue.core.graph.builder import build_agent_graph
 from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.debug import log_state
 from solidcue.user.loader import load_user_profile
-from solidcue.utils.env import generate_env_key, write_env_key
-from solidcue.utils.tracing import configure_langsmith_tracing_env, trace_langgraph_invoke
+from solidcue.observability import (
+    configure_langsmith_tracing_env,
+    generate_env_key,
+    get_langfuse_callbacks,
+    trace_langgraph_invoke,
+    write_env_key,
+)
 from langgraph.types import Command
 
 
@@ -145,11 +150,15 @@ def _build_run_config(
         if isinstance(value, str) and value:
             metadata[key] = value
 
-    return {
+    run_config: dict[str, Any] = {
         "run_name": f"solidcue:{agent_key}",
         "tags": ["solidcue", "langgraph", f"agent:{agent_key}"],
         "metadata": metadata,
     }
+    callbacks = get_langfuse_callbacks()
+    if callbacks:
+        run_config["callbacks"] = callbacks
+    return run_config
 
 
 def _invoke_graph(

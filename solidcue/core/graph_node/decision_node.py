@@ -193,7 +193,7 @@ def decision_node(state: AgentState) -> dict[str, Any]:
         tool_call_history=scoped_tool_call_history,
     )
     provider = get_provider_for_role(agent_config, "brain")
-    output_text, metric_decision = timed_generate(provider, messages)
+    output_text, metric_decision = timed_generate(provider, messages, node_name="decision")
 
     available_tools = agent_config.tools if hasattr(agent_config, "tools") else []
     if not available_tools:

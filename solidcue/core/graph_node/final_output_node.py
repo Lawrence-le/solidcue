@@ -229,7 +229,7 @@ def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict
         agent = load_agent(agent_key)
         provider = get_provider_for_role(agent, "lite")
         messages = build_final_output_messages(payload)
-        output, metric_final_output = timed_generate(provider, messages)
+        output, metric_final_output = timed_generate(provider, messages, node_name="final_output")
         if isinstance(output, str) and output.strip():
             return output.strip(), metric_final_output
     except Exception:

@@ -231,6 +231,15 @@ wheels = [
 ]
 
 [[package]]
+name = "backoff"
+version = "2.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/d7/5bbeb12c44d7c4f2fb5b56abce497eb5ed9f34d85701de869acedd602619/backoff-2.2.1.tar.gz", hash = "sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba", size = 17001, upload-time = "2022-10-05T19:19:32.061Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/df/73/b6e24bd22e6720ca8ee9a85a0c4a2971af8497d8f3193fa05390cbd46e09/backoff-2.2.1-py3-none-any.whl", hash = "sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8", size = 15148, upload-time = "2022-10-05T19:19:30.546Z" },
+]
+
+[[package]]
 name = "boto3"
 version = "1.43.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1169,6 +1178,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5c/51/1157009b6f94e6e58be58fa8b620187d657909a8b36a6bf5b0c52a2711f6/langchain_protocol-0.0.12.tar.gz", hash = "sha256:5e14c434290a705c9510fdb1a83ecf7561a5e6e0dfd053930ade80dba069269f", size = 6408, upload-time = "2026-04-25T01:05:01.489Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/95/82/3431e3061c917439589fa88a6b23c9bc0e154cba0f05d2e895a68c76ff74/langchain_protocol-0.0.12-py3-none-any.whl", hash = "sha256:402b61f42d4139692528cf37226c367bb6efc8ff8165b29380accb0abfece7b2", size = 6639, upload-time = "2026-04-25T01:05:00.487Z" },
+]
+
+[[package]]
+name = "langfuse"
+version = "4.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "backoff" },
+    { name = "httpx" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+    { name = "packaging" },
+    { name = "pydantic" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ab/80/0bd2ed8f781905d8e4c8f69e72fd06d914c907f31a3074449d20f8964c78/langfuse-4.7.0.tar.gz", hash = "sha256:7b592a251777dae44f76db7971871ff16c4c200d490cb5cd4e2f3822a1d593ec", size = 282543, upload-time = "2026-05-27T18:51:01.521Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cf/13/9a2304f546c74bc2bfc4765adb1e6f6a0984ead671fa65c3edcf9d473b58/langfuse-4.7.0-py3-none-any.whl", hash = "sha256:72ca668ce0999d05c787ccbfa313b679b99b3492e268d351549488822dd40c34", size = 482420, upload-time = "2026-05-27T18:50:59.773Z" },
 ]
 
 [[package]]
@@ -2855,6 +2883,7 @@ dependencies = [
     { name = "httpx" },
     { name = "inquirerpy" },
     { name = "langchain" },
+    { name = "langfuse" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "markdown-it-py" },
@@ -2883,6 +2912,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "inquirerpy", specifier = ">=0.3.4" },
     { name = "langchain", specifier = ">=1.2.15" },
+    { name = "langfuse", specifier = ">=4.7.0" },
     { name = "langgraph", specifier = ">=1.1.10" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0" },
     { name = "markdown-it-py", specifier = ">=4.0.0" },
