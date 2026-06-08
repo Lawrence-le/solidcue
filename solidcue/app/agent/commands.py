@@ -363,6 +363,57 @@ def list_agents_cmd() -> None:
         print("")
 
 
+def _read_multiline_prompt() -> str:
+    """Read a multi-line prompt from the user.
+
+    Supports two input modes:
+    1. Single-line: type a message and press Enter — returns immediately.
+    2. Multi-line paste: detects buffered text and drains it all.
+
+    Uses a two-phase timeout strategy:
+    - Short initial probe (50ms) after the first line to detect if this is
+      a paste or a typed single line.
+    - Longer drain timeout (500ms) between subsequent lines to tolerate
+      chunked paste delivery from the terminal.
+
+    This prevents leftover pasted text from leaking into the shell after
+    the application exits.
+    """
+    import sys
+    import select
+
+    print("[dim]Enter your prompt (paste multi-line text freely, end with an empty line):[/dim]")
+    lines: list[str] = []
+    first_line = sys.stdin.readline()
+    if not first_line:
+        return ""
+    lines.append(first_line.rstrip("\n").rstrip("\r"))
+
+    # Short probe: is there more data buffered (paste) or was this typed?
+    if not hasattr(select, "select"):
+        return "\n".join(lines).strip()
+
+    ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+    if not ready:
+        # Single-line typed input — return immediately.
+        return "\n".join(lines).strip()
+
+    # Multi-line paste detected — drain with a generous timeout to handle
+    # chunked delivery. Terminal emulators paste in bursts with gaps that
+    # can exceed 100ms on large payloads.
+    while True:
+        line = sys.stdin.readline()
+        if not line:  # EOF
+            break
+        lines.append(line.rstrip("\n").rstrip("\r"))
+        # Wait for next chunk; 500ms tolerates slow paste delivery.
+        ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+        if not ready:
+            break
+
+    return "\n".join(lines).strip()
+
+
 def run_agent_cmd(debug: bool = False) -> None:
     """Run an existing AI agent."""
     agents = get_agents()
@@ -382,7 +433,7 @@ def run_agent_cmd(debug: bool = False) -> None:
         ],
     ).execute()
 
-    prompt = typer.prompt("Enter your prompt")
+    prompt = _read_multiline_prompt()
     thread_id = create_thread_id()
 
     try:

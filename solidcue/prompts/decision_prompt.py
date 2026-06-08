@@ -294,7 +294,7 @@ def _append_path_hints(system_prompt: str, meta: dict[str, Any]) -> str:
                 "\n\n=== OUTPUT FILENAMES ===\n"
                 "Output filename hints:\n"
                 "STRICT REQUIREMENT: Replace all {{placeholders}}, <tags>, or YYYYMMDD with real-world values.\n"
-                "1. Identify the specific entities (People, Organizations, Projects, or Roles) mentioned in the Goal or Context.\n"
+                "1. Identify the specific entities (People, Organizations, Projects, or Roles). Check the user's original request FIRST, then the Goal or Context. The user's request is the primary source for target entities (e.g., company, role, recipient).\n"
                 "2. Map these specific names to the placeholders. Never use generic category words (like 'candidate', 'user', or 'file') if a specific name is available.\n"
                 "3. Ensure the final filename is a fully resolved string with no brackets or braces remaining.\n"
                 f"{joined_names}"

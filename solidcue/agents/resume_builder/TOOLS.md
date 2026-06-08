@@ -50,7 +50,17 @@ If creating, folder resolution, or uploading fails, stop and tell the user exact
 
 ## Job Description Routing
 
-If the user provides a job URL:
+Determine how the job description was provided:
+
+### Option A — User pasted JD text directly (no URL in user input)
+
+The job description content is already present in the user's message.
+Do NOT create any source_gathering task for JD extraction. There is no tool to call — the text is already available.
+Do NOT call `browser_navigate` or `browser_get_html` — there is no URL to fetch.
+The first task in the plan should be the master resume retrieval step (`drive_list_by_path`).
+The pasted JD text in the user input is the authoritative job description for tailoring.
+
+### Option B — User provided a job URL
 
 1. Use `browser_navigate` to open the job URL.
 2. Use `browser_get_html` to extract job text from the open browser page.

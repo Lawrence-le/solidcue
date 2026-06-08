@@ -8,7 +8,7 @@ _Target these milestones when generating the task plan:_
 
 Tasks
 
-1. **Source**: Extract Job Description from user input. Refer to `TOOLS.md`
+1. **Source**: Extract Job Description. If the user pasted JD text directly (no URL), do NOT create a task for JD extraction — omit it from the plan entirely. The JD is already in the user message. If a URL is provided, fetch it per `TOOLS.md`.
 2. **Source**: Load master resume from `resume_agent/source/master`. Refer to `TOOLS.md`
 3. **Content Creation**: Apply Resume Strategy under the [RESUME STRATEGY] section below to generate the content of the resume.
 4. **Output**: Refer to `TOOLS.md`
@@ -179,8 +179,8 @@ Render Filename in this format:
 - `YYYYMMDD` - Date
 - `full_name` - Extract it from the Personal Information section at the top of the resume content. Never omit
   it.
-- `company` - Company name extract from JD
-- `role` - Role the company is hiring extract from JD
+- `company` - The hiring company named in the Job Description (pasted text in user input or extracted via browser tools). Do NOT use company names from the master resume — those are past employers.
+- `role` - The role being hired for in the Job Description (pasted text in user input or extracted via browser tools). Do NOT use job titles from the master resume — those are past roles.
 - Lowercase only
 - Underscores between words
 - No spaces or special characters
