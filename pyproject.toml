@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 
 dependencies = [
     "arize-phoenix>=15.4.0",
+    "fastapi>=0.115.0",
     "httpx>=0.28.1",
     "inquirerpy>=0.3.4",
     "langchain>=1.2.15",
@@ -26,10 +27,12 @@ dependencies = [
     "torch>=2.0.0",
     "transformers>=4.36.0,<5.0.0",
     "typer>=0.25.0",
+    "uvicorn[standard]>=0.34.0",
 ]
 
 [project.scripts]
 cli = "solidcue.app.cli:app"
+api = "solidcue.api.main:run"
 
 [tool.uv]
 package = true
@@ -41,4 +44,9 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-asyncio>=0.25.0",
+    "anyio>=4.0.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

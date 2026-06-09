@@ -28,7 +28,7 @@ PHASE_INSTRUCTION: dict[str, str] = {
     "synthesis": "Compose a final response from the evidence gathered. No tool use needed.",
 }
 
-PHASE_WITH_SKILL_GUIDANCE = {"artifact", "synthesis"}
+PHASE_WITH_SKILL_GUIDANCE = {"artifact", "source", "synthesis"}
 PHASE_WITH_TOOLS_GUIDANCE = {"artifact", "source"}
 
 TIME_LOCATION_DEFAULTS = {
@@ -171,6 +171,22 @@ def _format_tool_call_history(tool_call_history: list[dict[str, Any]] | None) ->
                 line += f" [{', '.join(acc_parts)}]"
 
         lines.append(line)
+    return "\n".join(lines) if lines else "None"
+
+
+def _format_conversation_history(chat_history: list[dict[str, Any]] | None, *, limit: int = 8) -> str:
+    if not isinstance(chat_history, list) or not chat_history:
+        return "None"
+
+    lines: list[str] = []
+    for entry in chat_history[-limit:]:
+        if not isinstance(entry, dict):
+            continue
+        role = str(entry.get("role") or "").strip()
+        content = str(entry.get("content") or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        lines.append(f"{role}: {content}")
     return "\n".join(lines) if lines else "None"
 
 
@@ -396,12 +412,15 @@ def _build_runtime_context_message(
     meta: dict[str, Any],
     current_task_type: str,
     retry_reason: str | None,
+    chat_history: list[dict[str, Any]] | None,
 ) -> str:
     runtime_context = (
         "=== RUNTIME CONTEXT ===\n"
         f"- Time: {time_location_context['current_time']} ({time_location_context['timezone']})\n"
         f"- Location: {time_location_context['location']}\n"
         f"- UTC: {time_location_context['current_time_utc']}\n\n"
+        "=== RECENT CONVERSATION ===\n"
+        f"{_format_conversation_history(chat_history)}\n\n"
         "=== TASK GUIDANCE ===\n"
         f"{task_guidance}"
     )
@@ -421,6 +440,7 @@ def build_decision_messages(
     retry_reason: str | None = None,
     metadata: dict[str, Any] | None = None,
     tool_call_history: list[dict[str, Any]] | None = None,
+    chat_history: list[dict[str, Any]] | None = None,
 ):
     tools = list(agent.tools or [])
     meta = metadata if isinstance(metadata, dict) else {}
@@ -448,6 +468,7 @@ def build_decision_messages(
         meta=meta,
         current_task_type=current_task_type,
         retry_reason=retry_reason,
+        chat_history=chat_history,
     )
 
     messages: list[dict[str, Any]] = [

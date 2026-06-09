@@ -5,7 +5,7 @@ import hashlib
 import re
 from typing import Any
 
-from solidcue.agents.configs.loader import load_agent, load_agent_skill, load_agent_tools
+from solidcue.agents.configs.loader import load_agent, load_agent_persona, load_agent_skill, load_agent_tools
 from solidcue.core.execution.provider_resolver import get_provider_for_role
 from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
@@ -169,8 +169,29 @@ def _extract_urls_from_input(user_input: str) -> list[str]:
     return deduped
 
 
-def _build_target_artifacts_source(user_input: str) -> list[dict[str, Any]]:
-    urls = _extract_urls_from_input(user_input)
+def _extract_urls_from_chat_history(chat_history: list[dict[str, Any]] | None) -> list[str]:
+    if not isinstance(chat_history, list) or not chat_history:
+        return []
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for entry in chat_history:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("role") or "").strip() != "user":
+            continue
+        for url in _extract_urls_from_input(str(entry.get("content") or "")):
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
+
+
+def _build_target_artifacts_source(user_input: str, chat_history: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    urls = _extract_urls_from_chat_history(chat_history)
+    for url in _extract_urls_from_input(user_input):
+        if url not in urls:
+            urls.append(url)
     items: list[dict[str, Any]] = []
     for idx, url in enumerate(urls, start=1):
         items.append(
@@ -219,7 +240,10 @@ def discovery_node(state: AgentState) -> dict[str, Any]:
     )
     # Phase 4: merge discovery artifacts into metadata.
     metadata = dict(state.get("metadata", {}))
-    target_artifacts_source = _build_target_artifacts_source(str(state.get("user_input") or ""))
+    target_artifacts_source = _build_target_artifacts_source(
+        str(state.get("user_input") or ""),
+        state.get("chat_history") if isinstance(state.get("chat_history"), list) else None,
+    )
     metadata["source_paths"] = source_paths
     metadata["output_paths"] = output_paths
     metadata["source_filenames"] = source_filenames

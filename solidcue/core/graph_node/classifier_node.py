@@ -70,6 +70,7 @@ def classifier_node(state: AgentState) -> dict[str, Any]:
         persona=load_agent_persona(agent_key),
         agent_name=agent.name or "",
         agent_description=agent.description or "",
+        chat_history=state.get("chat_history") if isinstance(state.get("chat_history"), list) else None,
     )
 
     provider = get_provider_for_role(agent, "lite")
@@ -106,6 +107,7 @@ def classifier_node(state: AgentState) -> dict[str, Any]:
         }
 
     return {
+        "phase": "source",
         **build_metric_state_delta("classifier", "metric_classifier", metric_stats),
         "messages": [{"role": "system", "content": "Task intent detected — proceeding to discovery"}],
     }

@@ -1,5 +1,6 @@
 import json
 import re
+from typing import TYPE_CHECKING
 from typing import Any
 
 from solidcue.agents.configs.loader import load_agent
@@ -7,6 +8,9 @@ from solidcue.core.execution.provider_resolver import get_provider_for_role
 from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 from solidcue.prompts.final_output_prompt import build_final_output_messages
+
+if TYPE_CHECKING:
+    from solidcue.providers.base import BaseProvider
 
 """
 Final Output Node - Function Overview
@@ -202,14 +206,10 @@ def _uploaded_artifacts_by_item(state: AgentState) -> list[dict[str, Any]]:
     return list(uploads.values())
 
 
-def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict[str, Any]]:
-    agent_key = state.get("agent_key")
-    if not isinstance(agent_key, str) or not agent_key:
-        return None, {}
-
+def _build_final_output_payload(state: AgentState) -> dict[str, Any] | None:
     successful_tool_history = _compact_successful_tool_history(state)
     if not successful_tool_history:
-        return None, {}
+        return None
 
     target_artifacts_source = []
     metadata = state.get("metadata")
@@ -218,17 +218,54 @@ def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict
         if isinstance(raw_sources, list):
             target_artifacts_source = raw_sources
 
-    payload = {
+    return {
         "user_input": str(state.get("user_input") or ""),
         "successful_tool_calls": successful_tool_history,
         "target_artifacts_source": target_artifacts_source,
         "uploaded_artifacts_by_item": _uploaded_artifacts_by_item(state),
     }
 
+
+def prepare_final_output_stream(state: AgentState) -> tuple["BaseProvider", list[dict[str, str]]] | None:
+    agent_key = state.get("agent_key")
+    if not isinstance(agent_key, str) or not agent_key:
+        return None
+
+    payload = _build_final_output_payload(state)
+    if not isinstance(payload, dict):
+        return None
+
     try:
         agent = load_agent(agent_key)
         provider = get_provider_for_role(agent, "lite")
         messages = build_final_output_messages(payload)
+        return provider, messages
+    except Exception:
+        return None
+
+
+def resolve_final_output(state: AgentState, llm_output: str | None = None) -> str:
+    if state.get("phase") == "conversational":
+        existing = state.get("final_response")
+        if isinstance(existing, str) and existing.strip():
+            return existing
+        return _build_fallback_output(state)
+
+    existing = state.get("final_response")
+    if isinstance(existing, str) and existing.strip():
+        existing_output = existing
+    else:
+        existing_output = None
+    return llm_output or state.get("synthesis_draft") or existing_output or _build_fallback_output(state)
+
+
+def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict[str, Any]]:
+    prepared = prepare_final_output_stream(state)
+    if not prepared:
+        return None, {}
+
+    try:
+        provider, messages = prepared
         output, metric_final_output = timed_generate(provider, messages, node_name="final_output")
         if isinstance(output, str) and output.strip():
             return output.strip(), metric_final_output
@@ -242,22 +279,15 @@ def final_output_node(state: AgentState) -> dict[str, Any]:
     Terminal node. Reads synthesis_draft (normal path) or falls back to
     fallback logic. Writes only final_response.
     """
-    # Phase 1: fast-path conversational responses.
     if state.get("phase") == "conversational":
-        return {
-            "final_response": state.get("final_response") or _build_fallback_output(state),
-        }
-
-    # Phase 2: compose user-facing output via final-output model.
-    llm_output, metric_final_output = _llm_compose_user_facing_output(state)
-    # Phase 3: fallback ordering when model output is unavailable.
-    final_output = (
-        llm_output
-        or state.get("synthesis_draft")
-        or _build_fallback_output(state)
-    )
+        llm_output = None
+        metric_final_output: dict[str, Any] = {}
+    else:
+        llm_output, metric_final_output = _llm_compose_user_facing_output(state)
+    final_output = resolve_final_output(state, llm_output)
 
     return {
         "final_response": final_output,
+        "chat_history": [{"role": "assistant", "content": final_output}] if final_output else [],
         **build_metric_state_delta("final_output", "metric_final_output", metric_final_output),
     }

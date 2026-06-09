@@ -21,12 +21,29 @@ def _compact_guidance(text: str, limit: int = 15000) -> str:
     return compact[: limit - 1].rstrip() + "…"
 
 
+def _format_conversation_history(chat_history: list[dict[str, Any]] | None, *, limit: int = 8) -> str:
+    if not isinstance(chat_history, list) or not chat_history:
+        return "None specified."
+
+    lines: list[str] = []
+    for entry in chat_history[-limit:]:
+        if not isinstance(entry, dict):
+            continue
+        role = str(entry.get("role") or "").strip()
+        content = str(entry.get("content") or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        lines.append(f"- {role}: {content}")
+    return "\n".join(lines) if lines else "None specified."
+
+
 def build_planning_messages(
     *,
     user_input: str,
     skill_guidance: str = "",
     tools_guidance: str = "",
     metadata: dict[str, Any] | None = None,
+    chat_history: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     # 1. Prepare dynamic components
     compact_skill = _compact_guidance(skill_guidance) or "General technical project management standards."
@@ -76,6 +93,8 @@ def build_planning_messages(
 {source_filenames_str}
 - **Preferred Output Filenames:**
 {output_filenames_str}
+- **Recent Conversation:**
+{_format_conversation_history(chat_history)}
 """.strip()
 
     return [

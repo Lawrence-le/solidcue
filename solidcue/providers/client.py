@@ -1,6 +1,25 @@
 import time
+from collections.abc import AsyncIterator, Iterator
 
 import httpx
+
+
+class AsyncHTTPClient:
+    def __init__(self, timeout: int = 120) -> None:
+        self.timeout = timeout
+
+    async def post(self, url: str, headers: dict, json: dict) -> dict:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(url, headers=headers, json=json)
+            response.raise_for_status()
+            return response.json()
+
+    async def stream_post(self, url: str, headers: dict, json: dict) -> AsyncIterator[str]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client.stream("POST", url, headers=headers, json=json) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    yield line
 
 
 class HTTPClient:
@@ -41,6 +60,15 @@ class HTTPClient:
                 )
                 time.sleep(delay_seconds)
                 attempt += 1
+
+    def stream_post(self, url: str, headers: dict, json: dict) -> Iterator[str]:
+        try:
+            with self.client.stream("POST", url, headers=headers, json=json) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    yield line
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(self._build_error_message(exc)) from exc
 
     def _is_retryable_status(self, status_code: int) -> bool:
         return status_code == 429 or 500 <= status_code < 600

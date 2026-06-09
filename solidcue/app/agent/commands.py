@@ -22,8 +22,8 @@ from solidcue.services.agent_service import (
     CreateAgentInput,
     create_agent as create_agent_service,
     get_agents,
-    run_agent_step as run_agent_step_service,
 )
+from solidcue.services.run_engine import run_agent_step as run_agent_step_service
 from solidcue.services.state_snapshot_service import (
     build_live_state_snapshot,
     build_state_snapshot,

@@ -105,6 +105,20 @@ def test_initialize_omits_disallowed_artifact_and_synthesis_writes() -> None:
         assert key not in result, f"initialize_node must not write '{key}'"
 
 
+def test_initialize_does_not_reemit_append_only_history_fields() -> None:
+    result = initialize_node(
+        {
+            "messages": [{"role": "system", "content": "status"}],
+            "chat_history": [{"role": "user", "content": "hello"}],
+            "llm_prompt_messages": [{"role": "user", "content": "prompt"}],
+        }
+    )
+
+    assert "messages" not in result
+    assert "chat_history" not in result
+    assert "llm_prompt_messages" not in result
+
+
 def test_initialize_does_not_preload_hhem_by_default(monkeypatch) -> None:
     called = {"value": False}
     monkeypatch.delenv("SOLIDCUE_HHEM_PRELOAD", raising=False)

@@ -1,3 +1,4 @@
+from contextlib import contextmanager, nullcontext
 import os
 from typing import Any
 
@@ -50,6 +51,77 @@ def flush_langfuse() -> None:
     except Exception:
         # Fail-open for short-lived CLI use.
         return
+
+
+def _is_valid_langfuse_session_id(value: str) -> bool:
+    if not value or len(value) > 200:
+        return False
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+@contextmanager
+def propagate_langfuse_session(*, session_id: str | None):
+    if not is_langfuse_enabled():
+        with nullcontext():
+            yield
+        return
+
+    normalized = str(session_id or "").strip()
+    if not _is_valid_langfuse_session_id(normalized):
+        with nullcontext():
+            yield
+        return
+
+    try:
+        from langfuse import propagate_attributes
+    except ImportError:
+        with nullcontext():
+            yield
+        return
+    except Exception:
+        with nullcontext():
+            yield
+        return
+
+    try:
+        context = propagate_attributes(session_id=normalized)
+    except Exception:
+        with nullcontext():
+            yield
+        return
+    with context:
+        yield
+
+
+@contextmanager
+def start_langfuse_root_span(*, name: str, input_payload: Any | None = None):
+    if not is_langfuse_enabled():
+        with nullcontext():
+            yield
+        return
+
+    _bootstrap_langfuse()
+    if _LANGFUSE_CLIENT is None:
+        with nullcontext():
+            yield
+        return
+
+    try:
+        context = _LANGFUSE_CLIENT.start_as_current_observation(
+            as_type="span",
+            name=name,
+            input=input_payload,
+        )
+    except Exception:
+        with nullcontext():
+            yield
+        return
+    with context:
+        yield
 
 
 def start_langfuse_generation(

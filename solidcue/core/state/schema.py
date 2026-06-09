@@ -19,6 +19,7 @@ class AgentState(TypedDict, total=False):
 
     # --- Message state ---
     messages: Annotated[list[dict[str, Any]], operator.add]
+    chat_history: Annotated[list[dict[str, Any]], operator.add]
     llm_prompt_messages: list[dict[str, Any]]
 
     # --- Metrics ---

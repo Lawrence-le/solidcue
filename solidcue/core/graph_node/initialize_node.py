@@ -71,8 +71,6 @@ def initialize_node(state: AgentState) -> dict[str, Any]:
 
     return {
         "metadata": metadata,
-        "messages": list(state.get("messages", [])),
-        "llm_prompt_messages": list(state.get("llm_prompt_messages", [])),
         "max_retries": max_retries,
         "phase": state.get("phase") or "source",
         "failure_type": state.get("failure_type"),

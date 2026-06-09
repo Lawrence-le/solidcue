@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 from pathlib import Path
@@ -38,10 +39,7 @@ def _resolve_checkpoint_db_path() -> Path:
 
 
 def _build_checkpointer() -> Any:
-    """Create a persistent sqlite checkpointer when available.
-
-    Falls back to in-memory checkpointing if sqlite extras are not installed.
-    """
+    """Sync checkpointer for the non-streaming (blocking) graph paths."""
     try:
         from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -53,6 +51,33 @@ def _build_checkpointer() -> Any:
         from langgraph.checkpoint.memory import InMemorySaver
 
         return InMemorySaver()
+
+
+# Module-level async checkpointer singleton — opened once, reused across requests.
+_async_checkpointer: Any = None
+_async_checkpointer_lock: asyncio.Lock | None = None
+
+
+async def _get_async_checkpointer() -> Any:
+    global _async_checkpointer, _async_checkpointer_lock
+    if _async_checkpointer_lock is None:
+        _async_checkpointer_lock = asyncio.Lock()
+    async with _async_checkpointer_lock:
+        if _async_checkpointer is not None:
+            return _async_checkpointer
+        try:
+            import aiosqlite
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+            checkpoint_db_path = _resolve_checkpoint_db_path()
+            checkpoint_db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = await aiosqlite.connect(str(checkpoint_db_path))
+            _async_checkpointer = AsyncSqliteSaver(conn)
+        except ModuleNotFoundError:
+            from langgraph.checkpoint.memory import InMemorySaver
+
+            _async_checkpointer = InMemorySaver()
+        return _async_checkpointer
 
 
 def _route_after_classifier(
@@ -100,31 +125,12 @@ def _route_after_router(
     return "final_output"
 
 
-def build_agent_graph():
-    """Build the SolidCue agent graph with Phase 3 task planning.
+def _passthrough_final_output_node(_state: AgentState) -> dict[str, Any]:
+    return {}
 
-    Workflow (per AGENT_GRAPH_REDESIGN.md + Phase 3):
 
-        initialize -> discovery -> planning -> decision
-                                               |
-                                               +--> execution -> reflection -> router
-                                               +--> synthesis -> validation -> router
-                                               +--> router (when artifact_plan ready)
-
-        router dispatches to:
-            - decision           (need more source)
-            - artifact_generation (artifact phase)
-            - artifact_execution  (artifact retry)
-            - synthesis           (synthesis phase)
-            - final_output        (terminal)
-
-        artifact_generation -> artifact_execution -> validation -> router
-        synthesis -> validation -> router
-        final_output -> END
-
-        Planning node (Phase 3) decomposes user queries into task_plan with
-        sequential tasks to guide multi-step workflows.
-    """
+def _compile_graph(checkpointer: Any, *, streaming_final_output: bool = False) -> Any:
+    """Build and compile the agent StateGraph with the given checkpointer."""
     graph = StateGraph(AgentState)
 
     graph.add_node("initialize", initialize_node)
@@ -137,7 +143,10 @@ def build_agent_graph():
     graph.add_node("router", router_node)
     graph.add_node("synthesis", synthesis_node)
     graph.add_node("validation", validation_llm_node)
-    graph.add_node("final_output", final_output_node)
+    graph.add_node(
+        "final_output",
+        _passthrough_final_output_node if streaming_final_output else final_output_node,
+    )
 
     graph.set_entry_point("initialize")
 
@@ -157,5 +166,16 @@ def build_agent_graph():
 
     graph.add_edge("final_output", END)
 
-    compiled = graph.compile(checkpointer=_build_checkpointer())
+    compiled = graph.compile(checkpointer=checkpointer)
     return compiled.with_config({"recursion_limit": _resolve_recursion_limit()})
+
+
+async def build_async_agent_graph(*, streaming_final_output: bool = False) -> Any:
+    """Build the agent graph with the async-compatible checkpointer."""
+    checkpointer = await _get_async_checkpointer()
+    return _compile_graph(checkpointer, streaming_final_output=streaming_final_output)
+
+
+def build_agent_graph(*, streaming_final_output: bool = False) -> Any:
+    """Build the agent graph with the sync checkpointer (non-streaming paths)."""
+    return _compile_graph(_build_checkpointer(), streaming_final_output=streaming_final_output)

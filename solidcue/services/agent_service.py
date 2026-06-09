@@ -1,5 +1,9 @@
+"""Agent CRUD — create, list, and persist agent configurations.
+
+Execution (run, stream, resume) lives in ``solidcue.services.run_engine``.
+"""
+
 from pydantic import BaseModel
-from typing import Any, cast
 
 from solidcue.agents.configs.loader import (
     list_agents,
@@ -10,18 +14,7 @@ from solidcue.agents.configs.loader import (
     save_agent_tools,
 )
 from solidcue.agents.configs.schema import AgentConfig, ProviderConfig
-from solidcue.core.graph.builder import build_agent_graph
-from solidcue.core.state.schema import AgentState
-from solidcue.core.utils.debug import log_state
-from solidcue.user.loader import load_user_profile
-from solidcue.observability import (
-    configure_langsmith_tracing_env,
-    generate_env_key,
-    get_langfuse_callbacks,
-    trace_langgraph_invoke,
-    write_env_key,
-)
-from langgraph.types import Command
+from solidcue.observability import generate_env_key, write_env_key
 
 
 class CreateAgentInput(BaseModel):
@@ -133,162 +126,3 @@ def create_agent(input_data: CreateAgentInput) -> tuple[AgentConfig, str]:
 
 def get_agents() -> list[AgentConfig]:
     return list_agents()
-
-
-def _build_run_config(
-    *,
-    agent_key: str,
-    profile_data: dict,
-    debug: bool,
-) -> dict:
-    metadata = {
-        "agent_key": agent_key,
-        "debug": debug,
-    }
-    for key in ("location", "timezone"):
-        value = profile_data.get(key)
-        if isinstance(value, str) and value:
-            metadata[key] = value
-
-    run_config: dict[str, Any] = {
-        "run_name": f"solidcue:{agent_key}",
-        "tags": ["solidcue", "langgraph", f"agent:{agent_key}"],
-        "metadata": metadata,
-    }
-    callbacks = get_langfuse_callbacks()
-    if callbacks:
-        run_config["callbacks"] = callbacks
-    return run_config
-
-
-def _invoke_graph(
-    *,
-    graph: Any,
-    input_payload: Any,
-    run_config: dict[str, Any],
-    debug: bool,
-) -> Any:
-    if not debug:
-        return graph.invoke(input_payload, config=run_config)
-
-    for update in graph.stream(input_payload, config=run_config, stream_mode="updates"):
-        if not isinstance(update, dict):
-            continue
-        for node_name, node_delta in update.items():
-            if isinstance(node_delta, dict):
-                log_state(str(node_name), node_delta)
-
-    snapshot = graph.get_state(run_config)
-    return snapshot.values
-
-
-def run_agent(
-    agent_key: str,
-    user_input: str,
-    thread_id: str,
-    debug: bool = False,
-) -> tuple[AgentConfig, AgentState]:
-    agent = load_agent(agent_key)
-    profile = load_user_profile()
-    profile_data = profile.model_dump(exclude_none=True)
-    state: AgentState = {
-        "agent_key": agent.agent_key,
-        "user_input": user_input,
-        "config": profile_data,
-        "max_retries": 10,
-    }
-    configure_langsmith_tracing_env()
-    graph = build_agent_graph()
-    run_config = _build_run_config(
-        agent_key=agent.agent_key,
-        profile_data=profile_data,
-        debug=debug,
-    )
-    run_config["configurable"] = {"thread_id": thread_id}
-    result = cast(
-        AgentState,
-        trace_langgraph_invoke(
-            span_name="solidcue.langgraph.run_agent",
-            attributes={
-                "solidcue.agent_key": agent.agent_key,
-                "solidcue.thread_id": thread_id,
-                "solidcue.debug": debug,
-            },
-            invoke=lambda: _invoke_graph(
-                graph=graph,
-                input_payload=state,
-                run_config=run_config,
-                debug=debug,
-            ),
-        ),
-    )
-    return agent, result
-
-
-def run_agent_step(
-    *,
-    agent_key: str,
-    thread_id: str,
-    debug: bool = False,
-    user_input: str | None = None,
-    resume_value: str | None = None,
-) -> tuple[AgentConfig, Any]:
-    """Run one LangGraph step, either initial input or resume from interrupt."""
-    agent = load_agent(agent_key)
-    profile = load_user_profile()
-    profile_data = profile.model_dump(exclude_none=True)
-    configure_langsmith_tracing_env()
-
-    graph = build_agent_graph()
-    run_config = _build_run_config(
-        agent_key=agent.agent_key,
-        profile_data=profile_data,
-        debug=debug,
-    )
-    run_config["configurable"] = {"thread_id": thread_id}
-
-    if resume_value is not None:
-        return (
-            agent,
-            trace_langgraph_invoke(
-                span_name="solidcue.langgraph.run_agent_step.resume",
-                attributes={
-                    "solidcue.agent_key": agent.agent_key,
-                    "solidcue.thread_id": thread_id,
-                    "solidcue.debug": debug,
-                },
-                invoke=lambda: _invoke_graph(
-                    graph=graph,
-                    input_payload=Command(resume=resume_value),
-                    run_config=run_config,
-                    debug=debug,
-                ),
-            ),
-        )
-
-    if user_input is None:
-        raise ValueError("user_input is required for initial run")
-
-    state: AgentState = {
-        "agent_key": agent.agent_key,
-        "user_input": user_input,
-        "config": profile_data,
-        "max_retries": 10,
-    }
-    return (
-        agent,
-        trace_langgraph_invoke(
-            span_name="solidcue.langgraph.run_agent_step.initial",
-            attributes={
-                "solidcue.agent_key": agent.agent_key,
-                "solidcue.thread_id": thread_id,
-                "solidcue.debug": debug,
-            },
-            invoke=lambda: _invoke_graph(
-                graph=graph,
-                input_payload=state,
-                run_config=run_config,
-                debug=debug,
-            ),
-        ),
-    )

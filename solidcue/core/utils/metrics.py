@@ -130,7 +130,12 @@ def timed_generate(
 
     started = time.perf_counter()
     try:
-        output = provider.generate(messages, max_tokens=max_tokens)
+        try:
+            output = provider.generate(messages, max_tokens=max_tokens)
+        except TypeError as exc:
+            if "max_tokens" not in str(exc):
+                raise
+            output = provider.generate(messages)
     except Exception as exc:
         end_langfuse_generation(
             generation,

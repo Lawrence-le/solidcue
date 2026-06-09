@@ -14,6 +14,22 @@ logger = logging.getLogger(__name__)
 _VAGUE_REQUIRES = {"data", "details", "information", "context", "output", "done"}
 _ACTION_PREFIXES = ("execute ", "download ", "list ", "run ", "call ", "use ")
 
+
+def _format_chat_history(chat_history: list[dict[str, Any]] | None, *, limit: int = 8) -> str:
+    if not isinstance(chat_history, list) or not chat_history:
+        return "None"
+
+    lines: list[str] = []
+    for entry in chat_history[-limit:]:
+        if not isinstance(entry, dict):
+            continue
+        role = str(entry.get("role") or "").strip()
+        content = str(entry.get("content") or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines) if lines else "None"
+
 """
 Planning Node - Function Overview
 ---------------------------------
@@ -109,6 +125,7 @@ def _llm_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             skill_guidance=load_agent_skill(agent_key),
             tools_guidance=load_agent_tools(agent_key),
             metadata=state.get("metadata") if isinstance(state.get("metadata"), dict) else {},
+            chat_history=state.get("chat_history") if isinstance(state.get("chat_history"), list) else None,
         )
         response_text, metric_stats = timed_generate(provider, messages, node_name="planning")
         logger.debug("planning LLM raw response (type=%s): %s", type(response_text).__name__, repr(response_text)[:500])
@@ -461,7 +478,14 @@ def _conversational_response(state: AgentState) -> dict[str, Any]:
                 "Keep it concise."
             ),
         },
-        {"role": "user", "content": user_input},
+        {
+            "role": "user",
+            "content": (
+                "Recent conversation:\n"
+                f"{_format_chat_history(state.get('chat_history') if isinstance(state.get('chat_history'), list) else None)}\n\n"
+                f"Current user request:\n{user_input}"
+            ),
+        },
     ]
 
     provider = get_provider_for_role(agent, "lite")

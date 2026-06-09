@@ -4,6 +4,8 @@ from .langfuse import (
     flush_langfuse,
     get_langfuse_callbacks,
     is_langfuse_enabled,
+    propagate_langfuse_session,
+    start_langfuse_root_span,
     start_langfuse_generation,
 )
 from .langsmith import configure_langsmith_tracing_env, is_langsmith_enabled
@@ -21,6 +23,8 @@ __all__ = [
     "is_langfuse_enabled",
     "is_langsmith_enabled",
     "is_phoenix_enabled",
+    "propagate_langfuse_session",
+    "start_langfuse_root_span",
     "start_langfuse_generation",
     "trace_langgraph_invoke",
     "write_env_key",
