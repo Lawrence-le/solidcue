@@ -5,7 +5,7 @@ import pytest
 
 from solidcue.services.run_engine import (
     get_thread_run_status,
-    stream_agent_events,
+    stream_agent_graph_events,
     stream_router_chat_events,
 )
 
@@ -76,7 +76,7 @@ class _RouterGraph:
 
 
 @pytest.mark.asyncio
-async def test_stream_agent_events_streams_final_output_and_persists_state(
+async def test_stream_agent_graph_events_streams_final_output_and_persists_state(
     monkeypatch,
 ) -> None:
     fake_graph = _Graph()
@@ -115,7 +115,7 @@ async def test_stream_agent_events_streams_final_output_and_persists_state(
 
     events = [
         event
-        async for event in stream_agent_events(
+        async for event in stream_agent_graph_events(
             agent_key="agent-1", thread_id="thread-x1", user_input="hello"
         )
     ]
@@ -141,7 +141,7 @@ async def test_stream_agent_events_streams_final_output_and_persists_state(
 
 
 @pytest.mark.asyncio
-async def test_stream_agent_events_propagates_langfuse_session_id(
+async def test_stream_agent_graph_events_propagates_langfuse_session_id(
     monkeypatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -201,7 +201,7 @@ async def test_stream_agent_events_propagates_langfuse_session_id(
 
     events = [
         event
-        async for event in stream_agent_events(
+        async for event in stream_agent_graph_events(
             agent_key="agent-1", thread_id="thread-x2", user_input="hello"
         )
     ]
@@ -220,7 +220,7 @@ async def test_stream_router_chat_events_hands_off_to_agent(
     graph_router = _RouterGraph()
     captured: dict[str, object] = {}
 
-    async def _fake_stream_agent_events(**kwargs):
+    async def _fake_stream_agent_graph_events(**kwargs):
         captured["agent_kwargs"] = kwargs
         yield {"event": "start", "data": {"thread_id": kwargs["thread_id"]}}
         yield {"event": "completed", "data": {"output": "done"}}
@@ -253,8 +253,8 @@ async def test_stream_router_chat_events_hands_off_to_agent(
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        "solidcue.services.run_engine.stream_agent_events",
-        _fake_stream_agent_events,
+        "solidcue.services.run_engine.stream_agent_graph_events",
+        _fake_stream_agent_graph_events,
     )
     monkeypatch.setattr(
         "solidcue.services.run_engine.start_langfuse_root_span",

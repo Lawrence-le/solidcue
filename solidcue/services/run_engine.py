@@ -1108,7 +1108,7 @@ def run_agent(
     return agent, result
 
 
-async def stream_agent_events(
+async def stream_agent_graph_events(
     *,
     agent_key: str,
     thread_id: str,
@@ -1133,7 +1133,6 @@ async def stream_agent_events(
     )
     async for event in iter_run_events(run_id):
         yield event
-
 
 async def stream_router_chat_events(
     *,
@@ -1168,7 +1167,7 @@ async def stream_router_chat_events(
         )
         if not agent_key or not latest_thread_id:
             raise ValueError("No routed agent thread found for this conversation")
-        async for event in stream_agent_events(
+        async for event in stream_agent_graph_events(
             agent_key=agent_key,
             thread_id=latest_thread_id,
             conversation_id=resolved_conversation_id,
@@ -1301,7 +1300,7 @@ async def stream_router_chat_events(
                             "agent_thread_id": agent_thread_id,
                         },
                     }
-                    async for event in stream_agent_events(
+                    async for event in stream_agent_graph_events(
                         agent_key=target_agent_key,
                         thread_id=agent_thread_id,
                         conversation_id=resolved_conversation_id,
