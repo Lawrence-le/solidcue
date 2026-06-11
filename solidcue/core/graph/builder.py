@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
 
-from solidcue.core.graph_node.classifier_node import classifier_node
 from solidcue.core.graph_node.decision_node import decision_node
 from solidcue.core.graph_node.discovery_node import discovery_node
 from solidcue.core.graph_node.planning_node import planning_node
@@ -80,25 +79,6 @@ async def _get_async_checkpointer() -> Any:
         return _async_checkpointer
 
 
-def _route_after_classifier(
-    state: AgentState,
-) -> Literal["discovery", "planning", "final_output"]:
-    if state.get("phase") == "conversational":
-        next_node = state.get("router_next")
-        if next_node == "planning":
-            return "planning"
-        return "final_output"
-    return "discovery"
-
-
-def _route_after_planning(
-    state: AgentState,
-) -> Literal["decision", "final_output"]:
-    if state.get("phase") == "conversational":
-        return "final_output"
-    return "decision"
-
-
 def _route_after_decision(state: AgentState) -> Literal["execution", "router"]:
     """Route after decision based on what was planned.
 
@@ -134,7 +114,6 @@ def _compile_graph(checkpointer: Any, *, streaming_final_output: bool = False) -
     graph = StateGraph(AgentState)
 
     graph.add_node("initialize", initialize_node)
-    graph.add_node("classifier", classifier_node)
     graph.add_node("discovery", discovery_node)
     graph.add_node("planning", planning_node)
     graph.add_node("decision", decision_node)
@@ -150,10 +129,9 @@ def _compile_graph(checkpointer: Any, *, streaming_final_output: bool = False) -
 
     graph.set_entry_point("initialize")
 
-    graph.add_edge("initialize", "classifier")
-    graph.add_conditional_edges("classifier", _route_after_classifier)
+    graph.add_edge("initialize", "discovery")
     graph.add_edge("discovery", "planning")
-    graph.add_conditional_edges("planning", _route_after_planning)
+    graph.add_edge("planning", "decision")
 
     graph.add_conditional_edges("decision", _route_after_decision)
     graph.add_edge("execution", "reflection")

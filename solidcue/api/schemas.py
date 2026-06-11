@@ -59,6 +59,34 @@ class StreamAgentRequest(BaseModel):
     resume_value: str | None = None
 
 
+class RuntimeProviderRequest(BaseModel):
+    type: Literal["openai_compatible", "anthropic", "openrouter"]
+    base_url: str | None = None
+    api_key: str
+    model: str
+    temperature: float | None = None
+
+
+class StreamChatRequest(BaseModel):
+    """Start or resume the user-facing routed chat."""
+
+    thread_id: str | None = None
+    conversation_id: str | None = None
+    user_input: str | None = None
+    resume_value: str | None = None
+    router_provider: RuntimeProviderRequest | None = None
+
+
+class UpdateProfileRequest(BaseModel):
+    location: str | None = None
+    timezone: str | None = None
+    display_name: str | None = None
+    personality: str | None = None
+    router_provider: dict[str, Any] | None = None
+    preferences: dict[str, Any] = Field(default_factory=dict)
+    router_api_key: str | None = None
+
+
 class ToolEnabledRequest(BaseModel):
     enabled: bool
 

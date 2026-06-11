@@ -68,15 +68,11 @@ Pipeline wrapper: normalize shape -> renumber IDs -> assign item keys.
 _build_task_plan_from_input:
 Select planning source path (empty-input default vs LLM/fallback).
 
-_conversational_response:
-Handle classifier-routed conversational path without task planning.
-
 planning_node:
 Main entrypoint. Phases:
-1) Conversational short-circuit
-2) Build raw task plan
-3) Apply guardrails
-4) Return normalized plan + metrics
+1) Build raw task plan
+2) Apply guardrails
+3) Return normalized plan + metrics
 """
 
 # ---------------------------------------------------------------------------
@@ -455,80 +451,17 @@ def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str, Any]]
     return task_plan, metric_planning
 
 
-# ---------------------------------------------------------------------------
-# Section: conversational mode
-# ---------------------------------------------------------------------------
-
-def _conversational_response(state: AgentState) -> dict[str, Any]:
-    agent_key = state.get("agent_key")
-    if not isinstance(agent_key, str) or not agent_key:
-        return {"final_response": "", "router_next": "final_output"}
-
-    user_input = state.get("user_input", "")
-    conversation_id = state.get("conversation_id") or state.get("thread_id")
-    agent = load_agent(agent_key)
-    skill = load_agent_skill(agent_key)
-    tools = load_agent_tools(agent_key)
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                f"You are {agent.name or 'an AI agent'}. {agent.description or ''}\n\n"
-                f"# Your Skills\n{skill or 'General assistant.'}\n\n"
-                f"# Available Tools\n{tools or 'No specific tools.'}\n\n"
-                "Answer the user's question directly and helpfully using the information above. "
-                "Keep it concise."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "Recent conversation:\n"
-                f"{_format_chat_history(load_chat_history(conversation_id, limit=12))}\n\n"
-                f"Current user request:\n{user_input}"
-            ),
-        },
-    ]
-
-    provider = get_provider_for_role(agent, "lite")
-    response_text, metric_stats = timed_generate(provider, messages, node_name="planning")
-
-    return {
-        "phase": "conversational",
-        "router_next": "final_output",
-        "final_response": str(response_text or ""),
-        "task_plan": [],
-        "current_task": "",
-        **build_metric_state_delta("planning", "metric_planning", metric_stats),
-        "messages": [{"role": "system", "content": "Conversational question answered"}],
-    }
-
-
-# ---------------------------------------------------------------------------
-# Section: core node
-# ---------------------------------------------------------------------------
-
 def planning_node(state: AgentState) -> dict[str, Any]:
-    """Generate a task plan from user input, or answer conversational questions.
-
-    If phase is 'conversational' (routed from classifier), answers the user's
-    question using skill and tools context. Otherwise decomposes the request
-    into a structured task plan.
-    """
-    # Phase 1: conversational short-circuit.
-    if state.get("phase") == "conversational":
-        return _conversational_response(state)
-
-    # Phase 2: build raw task plan from input/model.
+    """Generate a structured task plan for downstream execution."""
+    # Phase 1: build raw task plan from input/model.
     raw_task_plan, metric_planning = _build_task_plan_from_input(state)
-    # Phase 3: normalize plan into canonical runtime shape.
+    # Phase 2: normalize plan into canonical runtime shape.
     task_plan = _apply_planning_guardrails(
         raw_task_plan,
         metadata=state.get("metadata") if isinstance(state.get("metadata"), dict) else None,
     )
 
-    # Phase 4: finalize planning state for downstream nodes.
+    # Phase 3: finalize planning state for downstream nodes.
     first_task_id = task_plan[0]["id"] if task_plan else "task_1"
     return {
         "task_plan": task_plan,

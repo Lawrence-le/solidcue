@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from solidcue.agents.configs.loader import list_agents
+from solidcue.providers.factory import get_provider_from_any_config
+
+_RUNTIME_ROUTER_PROVIDER_CONFIGS: dict[str, Any] = {}
+
+
+def normalize_text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def select_target_agent_key(user_input: str) -> str:
+    lowered = user_input.casefold()
+    available_agent_keys = {
+        agent.agent_key for agent in list_agents() if isinstance(agent.agent_key, str)
+    }
+
+    if any(
+        keyword in lowered for keyword in ("resume", "cv", "curriculum vitae", "cover letter")
+    ):
+        if "resume_builder" in available_agent_keys:
+            return "resume_builder"
+
+    if any(
+        keyword in lowered
+        for keyword in ("job description", "job posting", "job ad", "jd", "archive job")
+    ):
+        if "jd_archiver" in available_agent_keys:
+            return "jd_archiver"
+
+    if "resume_builder" in available_agent_keys:
+        return "resume_builder"
+
+    if available_agent_keys:
+        return sorted(available_agent_keys)[0]
+
+    return ""
+
+
+def set_runtime_router_provider_config(thread_id: str, provider_config: Any) -> None:
+    normalized_thread_id = normalize_text(thread_id)
+    if not normalized_thread_id or provider_config is None:
+        return
+    _RUNTIME_ROUTER_PROVIDER_CONFIGS[normalized_thread_id] = provider_config
+
+
+def get_runtime_router_provider(thread_id: str):
+    normalized_thread_id = normalize_text(thread_id)
+    if not normalized_thread_id:
+        return None
+    provider_config = _RUNTIME_ROUTER_PROVIDER_CONFIGS.get(normalized_thread_id)
+    if provider_config is None:
+        return None
+    return get_provider_from_any_config(provider_config)
+
+
+def clear_runtime_router_provider_config(thread_id: str) -> None:
+    normalized_thread_id = normalize_text(thread_id)
+    if not normalized_thread_id:
+        return
+    _RUNTIME_ROUTER_PROVIDER_CONFIGS.pop(normalized_thread_id, None)
+
+
+def extract_json_object(text: str) -> dict[str, Any] | None:
+    raw = normalize_text(text)
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None

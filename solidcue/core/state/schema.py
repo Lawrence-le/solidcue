@@ -37,7 +37,7 @@ class AgentState(TypedDict, total=False):
     metric_final_output: dict[str, Any]
 
     # --- Redesign-canonical durable keys (per AGENT_GRAPH_REDESIGN.md) ---
-    phase: Literal["source", "artifact", "synthesis", "final", "conversational"]
+    phase: Literal["source", "artifact", "synthesis", "final"]
     synthesis_draft: str
     failure_type: Literal[
         "missing_source",

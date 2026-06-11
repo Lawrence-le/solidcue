@@ -36,3 +36,17 @@ def write_env_key(env_key: str, value: str) -> None:
         env_path.touch()
 
     set_key(str(env_path), env_key, normalized, quote_mode="never")
+
+
+def upsert_env_key(env_key: str, value: str) -> None:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("API key cannot be empty")
+
+    env_path = get_env_path()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    if not env_path.exists():
+        env_path.touch()
+
+    set_key(str(env_path), env_key, normalized, quote_mode="never")
+    os.environ[env_key] = normalized

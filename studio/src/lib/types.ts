@@ -9,6 +9,22 @@ export interface ProviderConfig {
   temperature: number | null
 }
 
+export interface RuntimeProviderConfig {
+  type: "openai_compatible" | "anthropic" | "openrouter"
+  base_url: string | null
+  api_key: string
+  model: string
+  temperature: number | null
+}
+
+export interface RouterProviderConfig {
+  type: "openai_compatible" | "anthropic" | "openrouter"
+  base_url: string | null
+  api_key_env: string
+  model: string
+  temperature: number | null
+}
+
 export interface AgentConfig {
   agent_id: string
   agent_key: string
@@ -81,7 +97,23 @@ export interface UserProfileConfig {
   timezone: string | null
   display_name: string | null
   personality: string | null
+  router_provider: RouterProviderConfig | null
   preferences: Record<string, unknown>
+}
+
+export interface UpdateProfileRequest {
+  location: string | null
+  timezone: string | null
+  display_name: string | null
+  personality: string | null
+  router_provider: {
+    type: "openai_compatible" | "anthropic" | "openrouter"
+    base_url: string | null
+    model: string
+    temperature: number | null
+  } | null
+  preferences: Record<string, unknown>
+  router_api_key?: string | null
 }
 
 export interface DiscoveredTool {
@@ -147,11 +179,36 @@ export interface InterruptPayload {
 }
 
 export type StreamEvent =
-  | { event: "start"; data: { thread_id: string; run_id: string; agent_key: string } }
+  | {
+      event: "start";
+      data: {
+        thread_id: string;
+        run_id?: string;
+        conversation_id?: string;
+        agent_key?: string;
+      };
+    }
   | { event: "node"; data: { node: string; phase: string | null; tokens?: { input: number; output: number; total: number } } }
   | { event: "message_start"; data: { thread_id: string; phase: string | null } }
   | { event: "message_delta"; data: { thread_id: string; delta: string } }
+  | {
+      event: "handoff";
+      data: {
+        thread_id: string;
+        conversation_id?: string;
+        target_agent_key: string;
+        agent_thread_id: string;
+      };
+    }
   | { event: "interrupt"; data: { thread_id: string; interrupt: InterruptPayload } }
-  | { event: "completed"; data: { thread_id: string; output: string; phase: string | null } }
+  | {
+      event: "completed";
+      data: {
+        thread_id: string;
+        output: string;
+        phase: string | null;
+        conversation_id?: string;
+      };
+    }
   | { event: "cancelled"; data: { thread_id: string; run_id: string } }
   | { event: "error"; data: { message: string } }

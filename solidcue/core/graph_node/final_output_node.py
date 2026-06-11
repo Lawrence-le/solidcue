@@ -245,12 +245,6 @@ def prepare_final_output_stream(state: AgentState) -> tuple["BaseProvider", list
 
 
 def resolve_final_output(state: AgentState, llm_output: str | None = None) -> str:
-    if state.get("phase") == "conversational":
-        existing = state.get("final_response")
-        if isinstance(existing, str) and existing.strip():
-            return existing
-        return _build_fallback_output(state)
-
     existing = state.get("final_response")
     if isinstance(existing, str) and existing.strip():
         existing_output = existing
@@ -275,15 +269,8 @@ def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict
 
 
 def final_output_node(state: AgentState) -> dict[str, Any]:
-    """
-    Terminal node. Reads synthesis_draft (normal path) or falls back to
-    fallback logic. Writes only final_response.
-    """
-    if state.get("phase") == "conversational":
-        llm_output = None
-        metric_final_output: dict[str, Any] = {}
-    else:
-        llm_output, metric_final_output = _llm_compose_user_facing_output(state)
+    """Terminal node that composes and writes the final user-facing response."""
+    llm_output, metric_final_output = _llm_compose_user_facing_output(state)
     final_output = resolve_final_output(state, llm_output)
 
     return {

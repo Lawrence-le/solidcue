@@ -1,20 +1,48 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   Bot,
+  Check,
   CheckCircle2,
+  ChevronDown,
   Loader2,
   Send,
+  Settings2,
   Square,
 } from "lucide-react";
-import { api, ApiError, streamAgent } from "@/lib/api";
-import type { InterruptPayload, StreamEvent } from "@/lib/types";
+import { api, ApiError, streamAgent, streamChat } from "@/lib/api";
+import type {
+  InterruptPayload,
+  StreamEvent,
+  UpdateProfileRequest,
+  UserProfileConfig,
+} from "@/lib/types";
+import {
+  PROVIDER_META,
+  type ProviderType,
+} from "@/lib/agent-config";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -46,6 +74,14 @@ type ChatMessageInput =
 
 type ChatMessage = ChatMessageInput & { id: string };
 type PersistedChatHistoryEntry = { role?: string; content?: string };
+
+interface RouterSettingsForm {
+  provider_type: ProviderType;
+  base_url: string;
+  api_key: string;
+  model: string;
+  temperature: string;
+}
 
 interface NodeTokens {
   input: number;
@@ -303,12 +339,62 @@ function StepHistory({ events }: { events: NodeEvent[] }) {
 }
 
 function formatWorkedLabel(seconds: number): string {
+  if (seconds < 1) {
+    return `Worked for ${Math.max(1, Math.round(seconds * 1000))} ms >`;
+  }
   if (seconds > 59) {
     const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
+    const remainingSeconds = Math.round(seconds % 60);
     return `Worked for ${minutes}m ${remainingSeconds}s >`;
   }
-  return `Worked for ${seconds} sec >`;
+  return `Worked for ${Math.round(seconds)} sec >`;
+}
+
+function isRouterProviderComplete(role: RouterSettingsForm): boolean {
+  const meta = PROVIDER_META[role.provider_type];
+  return (
+    role.model.trim().length > 0 &&
+    (!meta.needsBaseUrl || role.base_url.trim().length > 0)
+  );
+}
+
+function modelLabelForValue(
+  modelValue: string,
+): string {
+  const normalized = modelValue.trim();
+  if (!normalized) return "Select model";
+  return normalized;
+}
+
+const ROUTER_DEFAULTS_BY_PROVIDER: Record<
+  ProviderType,
+  { base_url: string }
+> = {
+  openai_compatible: {
+    base_url: "",
+  },
+  anthropic: {
+    base_url: "",
+  },
+  openrouter: {
+    base_url: "",
+  },
+};
+
+function routerSettingsFromProfile(profile: UserProfileConfig | null | undefined): RouterSettingsForm {
+  const configured = profile?.router_provider;
+  const providerType = configured?.type ?? "openrouter";
+  const defaults = ROUTER_DEFAULTS_BY_PROVIDER[providerType];
+  return {
+    provider_type: providerType,
+    base_url: configured?.base_url ?? defaults.base_url,
+    api_key: "",
+    model: configured?.model ?? "",
+    temperature:
+      configured?.temperature === null || configured?.temperature === undefined
+        ? "0.2"
+        : String(configured.temperature),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +418,10 @@ export function SessionsPage() {
   const [loadingSession, setLoadingSession] = useState(false);
   const [workedSeconds, setWorkedSeconds] = useState<number | null>(null);
   const [liveWorkedSeconds, setLiveWorkedSeconds] = useState(0);
+  const [providerSettingsOpen, setProviderSettingsOpen] = useState(false);
+  const [routerRole, setRouterRole] = useState<RouterSettingsForm>(() =>
+    routerSettingsFromProfile(null),
+  );
 
   const abortRef = useRef<AbortController | null>(null);
   const stopIntentionalRef = useRef(false);
@@ -351,6 +441,46 @@ export function SessionsPage() {
   const { data: agents } = useQuery({
     queryKey: ["agents"],
     queryFn: api.listAgents,
+  });
+
+  const { data: profile } = useQuery({
+    queryKey: ["profile"],
+    queryFn: api.getProfile,
+  });
+
+  useEffect(() => {
+    if (!profile) return;
+    setRouterRole(routerSettingsFromProfile(profile));
+  }, [profile]);
+
+  const saveRouterSettings = useMutation({
+    mutationFn: async () => {
+      const temperature = Number.parseFloat(routerRole.temperature || "0.2");
+      const providerMeta = PROVIDER_META[routerRole.provider_type];
+      const resolvedBaseUrl = providerMeta.needsBaseUrl
+        ? routerRole.base_url.trim() || null
+        : providerMeta.defaultBaseUrl;
+      const nextProfile: UpdateProfileRequest = {
+        display_name: profile?.display_name ?? null,
+        location: profile?.location ?? null,
+        timezone: profile?.timezone ?? null,
+        personality: profile?.personality ?? null,
+        preferences: profile?.preferences ?? {},
+        router_provider: {
+          type: routerRole.provider_type,
+          base_url: resolvedBaseUrl,
+          model: routerRole.model.trim(),
+          temperature: Number.isFinite(temperature) ? temperature : 0.2,
+        },
+        router_api_key: routerRole.api_key.trim(),
+      };
+      return api.updateProfile(nextProfile);
+    },
+    onSuccess: (updated) => {
+      qc.setQueryData(["profile"], updated);
+      setRouterRole(routerSettingsFromProfile(updated));
+      setProviderSettingsOpen(false);
+    },
   });
 
   const loadConversationMetadata = useCallback(
@@ -481,7 +611,7 @@ export function SessionsPage() {
     if (runStartedAtRef.current == null) return null;
     const elapsedSeconds = Math.max(
       0,
-      Math.ceil((Date.now() - runStartedAtRef.current) / 1000),
+      (Date.now() - runStartedAtRef.current) / 1000,
     );
     runStartedAtRef.current = null;
     setLiveWorkedSeconds(0);
@@ -715,6 +845,9 @@ export function SessionsPage() {
             },
           ];
         });
+      } else if (e.event === "handoff") {
+        setAgentKey(e.data.target_agent_key);
+        setThreadId(e.data.agent_thread_id);
       } else if (e.event === "interrupt") {
         markNodeDone(nodeEvents[nodeEvents.length - 1]?.node ?? "");
         setRunState("interrupted");
@@ -764,7 +897,7 @@ export function SessionsPage() {
   );
 
   async function handleContinue() {
-    if (!agentKey || !conversationId) return;
+    if (!conversationId || !agentKey) return;
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -806,7 +939,6 @@ export function SessionsPage() {
     resumeValue?: string,
     conversationIdOverride?: string,
   ) {
-    if (!agentKey) return;
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -827,7 +959,7 @@ export function SessionsPage() {
         };
 
     try {
-      await streamAgent(agentKey, body, handleEvent, ctrl.signal);
+      await streamChat(body, handleEvent, ctrl.signal);
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         streamingAssistantIdRef.current = null;
@@ -854,7 +986,7 @@ export function SessionsPage() {
   }
 
   function handleSend() {
-    if (!userInput.trim() || !agentKey || runState === "streaming") return;
+    if (!userInput.trim() || runState === "streaming") return;
     const text = userInput.trim();
     if (!conversationId) {
       const nextConversationId = crypto.randomUUID();
@@ -862,7 +994,7 @@ export function SessionsPage() {
       setConversationId(nextConversationId);
       const nextParams = new URLSearchParams(searchParams);
       nextParams.set("conversation", nextConversationId);
-      if (agentKey) nextParams.set("agent", agentKey);
+      nextParams.delete("agent");
       navigate(`/sessions?${nextParams.toString()}`, { replace: true });
       setUserInput("");
       addMessage({ role: "user", content: text });
@@ -905,7 +1037,7 @@ export function SessionsPage() {
   }
 
   async function handleResumeFromCancel() {
-    if (!agentKey || !conversationId) return;
+    if (!conversationId || !agentKey) return;
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -947,9 +1079,11 @@ export function SessionsPage() {
     streaming
       ? (workedSeconds ?? 0) + liveWorkedSeconds
       : workedSeconds;
+  const providerMeta = PROVIDER_META[routerRole.provider_type];
+  const currentModelLabel = modelLabelForValue(routerRole.model);
   const canSend =
-    !!agentKey &&
     !!userInput.trim() &&
+    isRouterProviderComplete(routerRole) &&
     !streaming &&
     runState !== "interrupted" &&
     runState !== "disconnected" &&
@@ -968,29 +1102,16 @@ export function SessionsPage() {
               <>
                 <span className="text-sm font-medium">
                   {agents?.find((a) => a.agent_key === agentKey)?.name ??
-                    agentKey}
+                    (agentKey || "Routed chat")}
                 </span>
                 <Badge variant="outline" className="ml-auto font-mono text-xs">
                   {conversationId.slice(0, 8)}
                 </Badge>
               </>
             ) : (
-              <Select
-                value={agentKey}
-                onValueChange={setAgentKey}
-                disabled={streaming}
-              >
-                <SelectTrigger size="sm" className="h-8 w-54 text-xs">
-                  <SelectValue placeholder="Select agent…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(agents ?? []).map((a) => (
-                    <SelectItem key={a.agent_key} value={a.agent_key}>
-                      {a.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <span className="text-sm text-muted-foreground">
+                Routed chat
+              </span>
             )}
           </div>
 
@@ -1002,9 +1123,7 @@ export function SessionsPage() {
                   <img src="/logo.png" alt="solidcue" className="mb-3 h-16 w-16 opacity-30" />
                   <p className="text-sm font-medium text-muted-foreground">No messages yet</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {agentKey
-                      ? "Type a message below to start."
-                      : "Select an agent to begin."}
+                    Type a message below to start.
                   </p>
                 </div>
               </div>
@@ -1112,8 +1231,8 @@ export function SessionsPage() {
 
           {/* Input */}
           <div className="shrink-0 px-4 sm:px-8 lg:px-16 pb-4 pt-2">
-            <div className="relative rounded-[24px] border border-border bg-card pl-4 pr-2 py-0.5 transition-all focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/30">
-              <div className="flex items-center gap-2">
+            <div className="relative rounded-[26px] border border-border/80 bg-card/95 px-3.5 py-2.5 shadow-sm transition-all focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/30">
+              <div className="flex items-start gap-2">
                 <textarea
                   ref={inputRef}
                   value={userInput}
@@ -1123,14 +1242,10 @@ export function SessionsPage() {
                     el.style.height = "auto";
                     el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
                   }}
-                  placeholder={
-                    agentKey
-                      ? "Type your message…"
-                      : "Type your message, then choose an agent to send"
-                  }
+                  placeholder={streaming ? "Task is running..." : "Type your message..."}
                   rows={1}
                   disabled={streaming}
-                  className="flex-1 resize-none bg-transparent py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none disabled:opacity-50 leading-relaxed max-h-[150px] overflow-y-auto"
+                  className="flex-1 resize-none bg-transparent py-1 text-[15px] text-foreground placeholder:text-muted-foreground/80 focus:outline-none disabled:opacity-50 leading-relaxed max-h-[150px] overflow-y-auto"
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
@@ -1138,31 +1253,61 @@ export function SessionsPage() {
                     }
                   }}
                 />
-                <div className="flex items-center my-0.5">
-                  {streaming ? (
+              </div>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <div />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild disabled={streaming}>
                     <button
                       type="button"
-                      onClick={handleStop}
-                      className="flex h-7 w-7 items-center justify-center rounded-full bg-muted hover:text-destructive transition-colors"
+                      className="inline-flex h-9 items-center gap-2 rounded-xl px-2.5 text-xs text-foreground/85 transition-colors hover:bg-muted/40 disabled:opacity-50"
                     >
-                      <Square className="h-3 w-3 fill-current" />
+                      <span className="max-w-[180px] truncate">{currentModelLabel}</span>
+                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
                     </button>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={!canSend}
-                      onClick={handleSend}
-                      className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground transition-all hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground active:scale-95"
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-72 rounded-2xl p-2">
+                    {routerRole.model.trim() ? (
+                      <>
+                        <DropdownMenuItem
+                          disabled
+                          className="rounded-xl px-3 py-2.5 opacity-100 focus:bg-transparent focus:text-foreground"
+                        >
+                          <span className="flex-1">{routerRole.model.trim()}</span>
+                          <Check className="h-4 w-4 text-foreground" />
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                      </>
+                    ) : null}
+                    <DropdownMenuItem
+                      onSelect={() => setProviderSettingsOpen(true)}
+                      className="rounded-xl px-3 py-2.5"
                     >
-                      <Send className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
+                      <Settings2 className="h-4 w-4" />
+                      <span>Provider settings</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                {streaming ? (
+                  <button
+                    type="button"
+                    onClick={handleStop}
+                    className="flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full bg-muted hover:text-destructive transition-colors"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!canSend}
+                    onClick={handleSend}
+                    className="flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-all hover:opacity-90 disabled:bg-muted disabled:text-muted-foreground active:scale-95"
+                  >
+                    <Send className="h-4 w-4" />
+                  </button>
+                )}
               </div>
             </div>
-            <p className="mt-1.5 px-1 text-xs text-muted-foreground/50">
-              Shift+Enter for new line
-            </p>
           </div>
         </div>
 
@@ -1185,6 +1330,125 @@ export function SessionsPage() {
           </div>
         </div>
       </div>
+
+      <Dialog open={providerSettingsOpen} onOpenChange={setProviderSettingsOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Provider Settings</DialogTitle>
+            <DialogDescription>
+              Configure the router model and provider connection used before agent handoff.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Provider</label>
+              <Select
+                value={routerRole.provider_type}
+                onValueChange={(value) =>
+                  setRouterRole((current) => {
+                    const nextProvider = value as ProviderType;
+                    return {
+                      ...current,
+                      provider_type: nextProvider,
+                      base_url:
+                        nextProvider === "openai_compatible" ? current.base_url : "",
+                      api_key: "",
+                    };
+                  })
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(PROVIDER_META).map(([key, meta]) => (
+                    <SelectItem key={key} value={key}>
+                      {meta.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Model</label>
+              <Input
+                value={routerRole.model}
+                onChange={(e) =>
+                  setRouterRole((current) => ({
+                    ...current,
+                    model: e.target.value,
+                  }))
+                }
+                placeholder="model-name"
+              />
+            </div>
+
+            {providerMeta.needsBaseUrl && (
+              <div className="space-y-1.5 sm:col-span-2">
+                <label className="text-sm font-medium">Base URL</label>
+                <Input
+                  value={routerRole.base_url}
+                  onChange={(e) =>
+                    setRouterRole((current) => ({
+                      ...current,
+                      base_url: e.target.value,
+                    }))
+                  }
+                  placeholder="https://api.example.com/v1"
+                />
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Temperature</label>
+              <Input
+                type="number"
+                step="0.1"
+                min="0"
+                max="2"
+                value={routerRole.temperature}
+                onChange={(e) =>
+                  setRouterRole((current) => ({
+                    ...current,
+                    temperature: e.target.value,
+                  }))
+                }
+                placeholder="0.2"
+              />
+            </div>
+
+            <div className="space-y-1.5 sm:col-span-2">
+              <label className="text-sm font-medium">API Key</label>
+              <Input
+                type="password"
+                value={routerRole.api_key}
+                onChange={(e) =>
+                  setRouterRole((current) => ({
+                    ...current,
+                    api_key: e.target.value,
+                  }))
+                }
+                placeholder="Paste API key"
+                autoComplete="off"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProviderSettingsOpen(false)}>
+              Close
+            </Button>
+            <Button
+              onClick={() => saveRouterSettings.mutate()}
+              disabled={!isRouterProviderComplete(routerRole) || saveRouterSettings.isPending}
+            >
+              {saveRouterSettings.isPending ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

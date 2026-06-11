@@ -1,4 +1,4 @@
-from .env import generate_env_key, get_env_path, get_project_root, write_env_key
+from .env import generate_env_key, get_env_path, get_project_root, upsert_env_key, write_env_key
 from .langfuse import (
     end_langfuse_generation,
     flush_langfuse,
@@ -27,5 +27,6 @@ __all__ = [
     "start_langfuse_root_span",
     "start_langfuse_generation",
     "trace_langgraph_invoke",
+    "upsert_env_key",
     "write_env_key",
 ]

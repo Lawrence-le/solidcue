@@ -14,7 +14,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from solidcue.api.routes import agents, mcp, profile, state, tools
+from solidcue.api.routes import agents, chat, mcp, profile, state, tools
 
 _DEFAULT_ORIGINS = [
     "http://localhost:5173",  # Vite (studio) dev server
@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(agents.router)
+    app.include_router(chat.router)
     app.include_router(tools.router)
     app.include_router(mcp.router)
     app.include_router(state.router)

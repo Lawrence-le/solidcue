@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2, Save } from "lucide-react"
 import { toast } from "sonner"
 import { api, ApiError } from "@/lib/api"
-import type { UserProfileConfig } from "@/lib/types"
+import type { UpdateProfileRequest, UserProfileConfig } from "@/lib/types"
 import { PageHeader } from "@/components/PageHeader"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -16,6 +16,7 @@ const EMPTY: UserProfileConfig = {
   location: null,
   timezone: null,
   personality: null,
+  router_provider: null,
   preferences: {},
 }
 
@@ -39,7 +40,7 @@ export function ProfilePage() {
   }
 
   const save = useMutation({
-    mutationFn: () => api.updateProfile(form),
+    mutationFn: () => api.updateProfile(form as UpdateProfileRequest),
     onSuccess: (updated) => {
       toast.success("Profile saved")
       qc.setQueryData(["profile"], updated)

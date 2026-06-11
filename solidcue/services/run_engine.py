@@ -24,6 +24,11 @@ from langgraph.types import Command
 
 from solidcue.agents.configs.loader import load_agent
 from solidcue.agents.configs.schema import AgentConfig
+from solidcue.core.router_graph.builder import build_async_router_graph
+from solidcue.core.router_graph.router_node._shared import (
+    clear_runtime_router_provider_config,
+    set_runtime_router_provider_config,
+)
 from solidcue.core.graph.builder import build_agent_graph, build_async_agent_graph
 from solidcue.core.graph_node.final_output_node import (
     prepare_final_output_stream,
@@ -35,6 +40,7 @@ from solidcue.core.utils.metrics import build_metric, build_metric_state_delta
 from solidcue.services.chat_history_service import (
     add_conversation_worked_seconds,
     append_chat_message,
+    get_conversation_metadata,
     update_conversation_run_state,
     upsert_conversation,
 )
@@ -188,6 +194,21 @@ def _build_initial_state(
     }
 
 
+def _build_router_initial_state(
+    *,
+    thread_id: str,
+    conversation_id: str,
+    user_input: str,
+) -> dict[str, Any]:
+    return {
+        "thread_id": thread_id,
+        "conversation_id": conversation_id,
+        "user_input": user_input,
+        "config": {},
+        "max_retries": 10,
+    }
+
+
 def _resolve_conversation_id(thread_id: str, conversation_id: str | None = None) -> str:
     if isinstance(conversation_id, str) and conversation_id.strip():
         return conversation_id.strip()
@@ -326,6 +347,20 @@ async def _async_guard_against_mid_graph_rerun(
         )
 
 
+def _resolve_routed_agent_key(state: dict[str, Any]) -> str | None:
+    agent_key = state.get("target_agent_key")
+    if isinstance(agent_key, str) and agent_key.strip():
+        return agent_key.strip()
+
+    handoff = state.get("handoff")
+    if isinstance(handoff, dict):
+        routed = handoff.get("target_agent_key")
+        if isinstance(routed, str) and routed.strip():
+            return routed.strip()
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Background execution task
 # ---------------------------------------------------------------------------
@@ -456,10 +491,7 @@ async def _execute_run(
                 output = ""
                 metric_final_output: dict[str, Any] = {}
                 message_started = False
-                prepared_stream = (
-                    None if state.get("phase") == "conversational"
-                    else prepare_final_output_stream(state)
-                )
+                prepared_stream = prepare_final_output_stream(state)
                 if prepared_stream:
                     provider, messages = prepared_stream
                     await emit(
@@ -649,6 +681,7 @@ async def start_run(
     conversation_id: str | None = None,
     user_input: str | None = None,
     resume_value: str | None = None,
+    record_user_message: bool = True,
 ) -> str:
     """Validate the request, build the payload, and launch a background execution Task.
 
@@ -679,12 +712,13 @@ async def start_run(
         payload: Any = Command(resume=resume_value)
     elif user_input is not None:
         await _async_guard_against_mid_graph_rerun(graph, run_config)
-        append_chat_message(
-            conversation_id=resolved_conversation_id,
-            role="user",
-            content=user_input,
-            agent_key=agent.agent_key,
-        )
+        if record_user_message:
+            append_chat_message(
+                conversation_id=resolved_conversation_id,
+                role="user",
+                content=user_input,
+                agent_key=agent.agent_key,
+            )
         payload = _build_initial_state(
             agent_key=agent.agent_key,
             thread_id=thread_id,
@@ -751,6 +785,7 @@ def run_agent_step(
     debug: bool = False,
     user_input: str | None = None,
     resume_value: str | None = None,
+    record_user_message: bool = True,
 ) -> tuple[AgentConfig, Any]:
     agent, profile_data, run_config = _load_agent_runtime(agent_key=agent_key, debug=debug)
     graph = build_agent_graph()
@@ -809,12 +844,13 @@ def run_agent_step(
     if user_input is None:
         raise ValueError("user_input is required for initial run")
 
-    append_chat_message(
-        conversation_id=resolved_conversation_id,
-        role="user",
-        content=user_input,
-        agent_key=agent.agent_key,
-    )
+    if record_user_message:
+        append_chat_message(
+            conversation_id=resolved_conversation_id,
+            role="user",
+            content=user_input,
+            agent_key=agent.agent_key,
+        )
     state = _build_initial_state(
         agent_key=agent.agent_key,
         thread_id=thread_id,
@@ -870,6 +906,7 @@ def run_agent(
     thread_id: str,
     conversation_id: str | None = None,
     debug: bool = False,
+    record_user_message: bool = True,
 ) -> tuple[AgentConfig, AgentState]:
     """Blocking full-graph run.  Returns when the graph reaches END."""
     agent, profile_data, run_config = _load_agent_runtime(agent_key=agent_key, debug=debug)
@@ -879,12 +916,13 @@ def run_agent(
         conversation_id=resolved_conversation_id,
         agent_key=agent.agent_key,
     )
-    append_chat_message(
-        conversation_id=resolved_conversation_id,
-        role="user",
-        content=user_input,
-        agent_key=agent.agent_key,
-    )
+    if record_user_message:
+        append_chat_message(
+            conversation_id=resolved_conversation_id,
+            role="user",
+            content=user_input,
+            agent_key=agent.agent_key,
+        )
     state = _build_initial_state(
         agent_key=agent.agent_key,
         thread_id=thread_id,
@@ -941,8 +979,10 @@ async def stream_agent_events(
     *,
     agent_key: str,
     thread_id: str,
+    conversation_id: str | None = None,
     user_input: str | None = None,
     resume_value: str | None = None,
+    record_user_message: bool = True,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield transport-agnostic stream events for a run or resume.
 
@@ -953,8 +993,187 @@ async def stream_agent_events(
     run_id = await start_run(
         agent_key=agent_key,
         thread_id=thread_id,
+        conversation_id=conversation_id,
         user_input=user_input,
         resume_value=resume_value,
+        record_user_message=record_user_message,
     )
     async for event in iter_run_events(run_id):
         yield event
+
+
+async def stream_router_chat_events(
+    *,
+    thread_id: str | None = None,
+    conversation_id: str | None = None,
+    user_input: str | None = None,
+    resume_value: str | None = None,
+    router_provider_config: Any = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Run the user-facing router graph, then hand off to a selected agent graph.
+
+    The router graph owns intent detection. When it returns a task handoff, the
+    runtime starts a second graph using the same conversation_id but a fresh
+    thread_id for the target agent.
+    """
+    if resume_value is not None:
+        resolved_conversation_id = _resolve_conversation_id(thread_id or create_thread_id(), conversation_id)
+        metadata = get_conversation_metadata(resolved_conversation_id)
+        agent_key = (
+            metadata.get("agent_key")
+            if isinstance(metadata, dict)
+            and isinstance(metadata.get("agent_key"), str)
+            and metadata.get("agent_key", "").strip()
+            else None
+        )
+        latest_thread_id = (
+            metadata.get("last_thread_id")
+            if isinstance(metadata, dict)
+            and isinstance(metadata.get("last_thread_id"), str)
+            and metadata.get("last_thread_id", "").strip()
+            else None
+        )
+        if not agent_key or not latest_thread_id:
+            raise ValueError("No routed agent thread found for this conversation")
+        async for event in stream_agent_events(
+            agent_key=agent_key,
+            thread_id=latest_thread_id,
+            conversation_id=resolved_conversation_id,
+            resume_value=resume_value,
+            record_user_message=False,
+        ):
+            yield event
+        return
+
+    if user_input is None:
+        raise ValueError("user_input is required")
+
+    router_thread_id = thread_id or create_thread_id()
+    resolved_conversation_id = _resolve_conversation_id(router_thread_id, conversation_id)
+    append_chat_message(
+        conversation_id=resolved_conversation_id,
+        role="user",
+        content=user_input,
+        agent_key="router",
+    )
+
+    configure_langsmith_tracing_env()
+    graph = await build_async_router_graph()
+    run_config: dict[str, Any] = {
+        "configurable": {"thread_id": router_thread_id},
+        "metadata": {
+            "conversation_id": resolved_conversation_id,
+            "agent_key": "router",
+        },
+    }
+
+    with start_langfuse_root_span(
+        name="solidcue.langgraph.router_run",
+        input_payload={"thread_id": router_thread_id, "conversation_id": resolved_conversation_id},
+    ):
+        with propagate_langfuse_session(session_id=router_thread_id):
+            set_runtime_router_provider_config(router_thread_id, router_provider_config)
+            yield {
+                "event": "start",
+                "data": {
+                    "thread_id": router_thread_id,
+                    "conversation_id": resolved_conversation_id,
+                    "agent_key": "router",
+                },
+            }
+            try:
+                async for update in graph.astream(
+                    _build_router_initial_state(
+                        thread_id=router_thread_id,
+                        conversation_id=resolved_conversation_id,
+                        user_input=user_input,
+                    ),
+                    config=run_config,
+                    stream_mode="updates",
+                ):
+                    if not isinstance(update, dict):
+                        continue
+                    for node_name, node_delta in update.items():
+                        if isinstance(node_delta, dict):
+                            await asyncio.sleep(0)
+                            yield {
+                                "event": "node",
+                                "data": {
+                                    "node": str(node_name),
+                                    "phase": node_delta.get("router_intent"),
+                                    "tokens": None,
+                                },
+                            }
+
+                snapshot = await graph.aget_state(run_config)
+                values = getattr(snapshot, "values", None)
+                state: dict[str, Any] = values if isinstance(values, dict) else {}
+                output = _first_output(state) or ""
+                handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
+                target_agent_key = _resolve_routed_agent_key(state)
+                handoff_action = handoff.get("action") if isinstance(handoff, dict) else None
+
+                if isinstance(target_agent_key, str) and target_agent_key.strip() and handoff_action == "route_agent":
+                    agent_thread_id = create_thread_id()
+                    upsert_conversation(
+                        conversation_id=resolved_conversation_id,
+                        agent_key=target_agent_key,
+                        last_thread_id=agent_thread_id,
+                        last_run_status="running",
+                    )
+                    yield {
+                        "event": "handoff",
+                        "data": {
+                            "thread_id": router_thread_id,
+                            "conversation_id": resolved_conversation_id,
+                            "target_agent_key": target_agent_key,
+                            "agent_thread_id": agent_thread_id,
+                        },
+                    }
+                    async for event in stream_agent_events(
+                        agent_key=target_agent_key,
+                        thread_id=agent_thread_id,
+                        conversation_id=resolved_conversation_id,
+                        user_input=str(handoff.get("task_input") or user_input),
+                        record_user_message=False,
+                    ):
+                        yield event
+                    return
+
+                if not output and handoff_action == "create_agent":
+                    output = "I can help create a new agent. Tell me the agent name, description, and tools."
+
+                if output:
+                    append_chat_message(
+                        conversation_id=resolved_conversation_id,
+                        role="assistant",
+                        content=output,
+                        agent_key="router",
+                    )
+                    yield {
+                        "event": "message_start",
+                        "data": {
+                            "thread_id": router_thread_id,
+                            "conversation_id": resolved_conversation_id,
+                            "phase": state.get("router_intent"),
+                        },
+                    }
+                    yield {
+                        "event": "message_delta",
+                        "data": {
+                            "thread_id": router_thread_id,
+                            "delta": output,
+                        },
+                    }
+
+                yield {
+                    "event": "completed",
+                    "data": {
+                        "thread_id": router_thread_id,
+                        "conversation_id": resolved_conversation_id,
+                        "output": output,
+                        "phase": state.get("router_intent"),
+                    },
+                }
+            finally:
+                clear_runtime_router_provider_config(router_thread_id)

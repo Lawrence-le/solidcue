@@ -8,10 +8,12 @@ import type {
   DiscoveredTool,
   LiveStateResponse,
   MCPServerConfig,
+  RuntimeProviderConfig,
   RunStatusResponse,
   StreamEvent,
   ThreadSummary,
   ToolConfig,
+  UpdateProfileRequest,
   UserProfileConfig,
 } from "./types"
 
@@ -111,7 +113,7 @@ export const api = {
 
   // profile
   getProfile: () => request<UserProfileConfig>("/profile"),
-  updateProfile: (body: UserProfileConfig) =>
+  updateProfile: (body: UpdateProfileRequest) =>
     request<UserProfileConfig>("/profile", { method: "PUT", body: JSON.stringify(body) }),
 }
 
@@ -163,5 +165,45 @@ function parseFrame(frame: string): StreamEvent | null {
     return { event, data: JSON.parse(dataLines.join("\n")) } as StreamEvent
   } catch {
     return null
+  }
+}
+
+export async function streamChat(
+  body: {
+    thread_id?: string
+    conversation_id?: string
+    user_input?: string
+    resume_value?: string
+    router_provider?: RuntimeProviderConfig
+  },
+  onEvent: (e: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${BASE}/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, res.statusText)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let sep: number
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      const parsed = parseFrame(frame)
+      if (parsed) onEvent(parsed)
+    }
   }
 }
