@@ -3,6 +3,8 @@
 
 import type {
   AgentConfig,
+  ConversationMetadataResponse,
+  ConversationThreadResponse,
   DiscoveredTool,
   LiveStateResponse,
   MCPServerConfig,
@@ -77,6 +79,7 @@ export const api = {
   // threads / state
   listThreads: () => request<ThreadSummary[]>(`/state/threads`),
   deleteThread: (threadId: string) => request<void>(`/state/threads/${threadId}`, { method: "DELETE" }),
+  deleteConversation: (conversationId: string) => request<void>(`/state/conversations/${conversationId}`, { method: "DELETE" }),
   liveState: (threadId: string, keys: string[]) =>
     request<LiveStateResponse>(
       `/state/live/${threadId}?${keys.map((k) => `key=${k}`).join("&")}`,
@@ -84,6 +87,20 @@ export const api = {
   runStatus: (threadId: string) => request<RunStatusResponse>(`/state/runs/${threadId}`),
   getInterrupt: (threadId: string) => request<{ interrupt: import("./types").InterruptPayload | null }>(`/state/interrupt/${threadId}`),
   isResumable: (threadId: string) => request<{ resumable: boolean; next_nodes: string[] }>(`/state/resumable/${threadId}`),
+  conversationLatestThread: (conversationId: string) =>
+    request<ConversationThreadResponse>(`/state/conversations/${conversationId}/latest-thread`),
+  conversationMetadata: (conversationId: string) =>
+    request<ConversationMetadataResponse>(`/state/conversations/${conversationId}/metadata`),
+  conversationLiveState: (conversationId: string, keys: string[]) =>
+    request<LiveStateResponse>(
+      `/state/conversations/${conversationId}/live?${keys.map((k) => `key=${k}`).join("&")}`,
+    ),
+  conversationRunStatus: (conversationId: string) =>
+    request<RunStatusResponse>(`/state/conversations/${conversationId}/runs`),
+  conversationInterrupt: (conversationId: string) =>
+    request<{ interrupt: import("./types").InterruptPayload | null }>(`/state/conversations/${conversationId}/interrupt`),
+  conversationResumable: (conversationId: string) =>
+    request<{ resumable: boolean; next_nodes: string[]; thread_id: string | null }>(`/state/conversations/${conversationId}/resumable`),
   cancelRun: (agentKey: string, runId: string) =>
     request<{ run_id: string; cancelled: boolean }>(`/agents/${agentKey}/runs/${runId}/cancel`, { method: "POST" }),
 
@@ -101,7 +118,7 @@ export const api = {
 // Stream a run/resume over SSE-via-POST. Calls onEvent for each parsed frame.
 export async function streamAgent(
   agentKey: string,
-  body: { thread_id?: string; user_input?: string; resume_value?: string },
+  body: { thread_id?: string; conversation_id?: string; user_input?: string; resume_value?: string },
   onEvent: (e: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {

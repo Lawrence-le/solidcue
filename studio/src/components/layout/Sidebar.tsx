@@ -1,12 +1,25 @@
 import { useState, useMemo } from "react"
 import { NavLink, useNavigate, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Bot, Check, Loader2, MoreVertical, Plus, PlugZap, Trash2, User, Wrench } from "lucide-react"
+import {
+  Bot,
+  Check,
+  Loader2,
+  MoreVertical,
+  Moon,
+  Plus,
+  PlugZap,
+  Sun,
+  Trash2,
+  User,
+  Wrench,
+} from "lucide-react"
 import { toast } from "sonner"
 import { api, ApiError } from "@/lib/api"
 import type { ThreadSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { useTheme } from "@/components/theme-provider"
 import {
   Dialog,
   DialogContent,
@@ -23,21 +36,35 @@ import {
 } from "@/components/ui/dropdown-menu"
 
 const NAV = [
+  { to: "/sessions", label: "New", icon: Plus },
   { to: "/agents", label: "Agents", icon: Bot },
   { to: "/mcp", label: "MCP", icon: PlugZap },
   { to: "/tools", label: "Tools", icon: Wrench },
   { to: "/profile", label: "Profile", icon: User },
 ]
 
+function sessionIdForThread(thread: ThreadSummary | null): string {
+  if (!thread) return ""
+  return thread.conversation_id || thread.thread_id
+}
+
 export function Sidebar() {
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const { resolved, toggle } = useTheme()
   const [searchParams] = useSearchParams()
-  const activeThread = searchParams.get("thread")
+  const activeConversation = searchParams.get("conversation") ?? searchParams.get("thread")
   const [agentFilter, setAgentFilter] = useState("all")
   const [threadToDelete, setThreadToDelete] = useState<ThreadSummary | null>(null)
   const [selectionMode, setSelectionMode] = useState(false)
-  const [selectedThreadIds, setSelectedThreadIds] = useState<string[]>([])
+  const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([])
+
+  const health = useQuery({
+    queryKey: ["health"],
+    queryFn: api.health,
+    refetchInterval: 15000,
+    retry: false,
+  })
 
   const { data: threads, isLoading } = useQuery({
     queryKey: ["threads"],
@@ -56,18 +83,19 @@ export function Sidebar() {
   }, [threads, agentFilter])
 
   const selectedThreads = useMemo(
-    () => visibleThreads.filter((thread) => selectedThreadIds.includes(thread.thread_id)),
-    [visibleThreads, selectedThreadIds],
+    () => visibleThreads.filter((thread) => selectedConversationIds.includes(sessionIdForThread(thread))),
+    [visibleThreads, selectedConversationIds],
   )
   const allVisibleSelected =
-    visibleThreads.length > 0 && visibleThreads.every((thread) => selectedThreadIds.includes(thread.thread_id))
+    visibleThreads.length > 0 && visibleThreads.every((thread) => selectedConversationIds.includes(sessionIdForThread(thread)))
+  const ok = health.isSuccess && health.data?.status === "ok"
 
   const deleteThread = useMutation({
-    mutationFn: (threadId: string) => api.deleteThread(threadId),
-    onSuccess: (_, deletedThreadId) => {
+    mutationFn: (conversationId: string) => api.deleteConversation(conversationId),
+    onSuccess: (_, deletedConversationId) => {
       toast.success("Session deleted")
       qc.invalidateQueries({ queryKey: ["threads"] })
-      if (activeThread === deletedThreadId) {
+      if (activeConversation === deletedConversationId) {
         navigate("/sessions")
       }
       setThreadToDelete(null)
@@ -76,42 +104,45 @@ export function Sidebar() {
   })
 
   const deleteThreads = useMutation({
-    mutationFn: async (threadIds: string[]) => {
-      await Promise.all(threadIds.map((threadId) => api.deleteThread(threadId)))
-      return threadIds
+    mutationFn: async (conversationIds: string[]) => {
+      await Promise.all(conversationIds.map((conversationId) => api.deleteConversation(conversationId)))
+      return conversationIds
     },
-    onSuccess: (deletedThreadIds) => {
+    onSuccess: (deletedConversationIds) => {
       toast.success(
-        deletedThreadIds.length === 1 ? "Session deleted" : `${deletedThreadIds.length} sessions deleted`,
+        deletedConversationIds.length === 1 ? "Session deleted" : `${deletedConversationIds.length} sessions deleted`,
       )
       qc.invalidateQueries({ queryKey: ["threads"] })
-      if (activeThread && deletedThreadIds.includes(activeThread)) {
+      if (
+        activeConversation &&
+        deletedConversationIds.includes(activeConversation)
+      ) {
         navigate("/sessions")
       }
-      setSelectedThreadIds([])
+      setSelectedConversationIds([])
       setSelectionMode(false)
       setThreadToDelete(null)
     },
     onError: (error: ApiError) => toast.error(error.message),
   })
 
-  function toggleThreadSelected(threadId: string) {
-    setSelectedThreadIds((prev) =>
-      prev.includes(threadId) ? prev.filter((id) => id !== threadId) : [...prev, threadId],
+  function toggleThreadSelected(conversationId: string) {
+    setSelectedConversationIds((prev) =>
+      prev.includes(conversationId) ? prev.filter((id) => id !== conversationId) : [...prev, conversationId],
     )
   }
 
   function exitSelectionMode() {
     setSelectionMode(false)
-    setSelectedThreadIds([])
+    setSelectedConversationIds([])
   }
 
   function toggleSelectAll() {
     if (allVisibleSelected) {
-      setSelectedThreadIds([])
+      setSelectedConversationIds([])
       return
     }
-    setSelectedThreadIds(visibleThreads.map((thread) => thread.thread_id))
+    setSelectedConversationIds(visibleThreads.map((thread) => sessionIdForThread(thread)))
   }
 
   return (
@@ -123,14 +154,14 @@ export function Sidebar() {
       </div>
 
       {/* Nav items */}
-      <nav className="flex shrink-0 flex-col gap-1 p-2">
+      <nav className="flex shrink-0 flex-col gap-0.5 p-1.5">
         {NAV.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
             className={({ isActive }) =>
               cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                "flex items-center gap-3 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                 isActive
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -146,23 +177,8 @@ export function Sidebar() {
       {/* Conversation list */}
       <div className="mx-2 border-t border-border/50" />
 
-      <div className="flex items-center justify-between px-3 py-2 shrink-0 gap-2">
-        <span className="min-w-0 truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Conversations
-        </span>
-        <button
-          type="button"
-          onClick={() => navigate("/sessions")}
-          className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-          title="New session"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New
-        </button>
-      </div>
-
       {agentKeys.length > 1 && (
-        <div className="shrink-0 px-3 pb-2 flex items-center gap-2">
+        <div className="mt-1.5 shrink-0 px-3 pb-2 flex items-center gap-2">
           <span className="text-xs text-muted-foreground shrink-0">Agent</span>
           <div className="relative flex-1">
             <select
@@ -195,7 +211,7 @@ export function Sidebar() {
       )}
 
       {agentKeys.length <= 1 && !selectionMode && (
-        <div className="shrink-0 px-3 pb-2 flex justify-end">
+        <div className="mt-1.5 shrink-0 px-3 pb-2 flex justify-end">
           <Button
             type="button"
             size="xs"
@@ -210,45 +226,47 @@ export function Sidebar() {
       )}
 
       {selectionMode && (
-        <div className="shrink-0 px-3 pb-2">
-          <div className="flex flex-wrap items-center justify-end gap-1">
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              onClick={toggleSelectAll}
-              className="text-xs text-muted-foreground"
-              disabled={!visibleThreads.length}
-            >
-              {allVisibleSelected ? "Clear all" : "Select all"}
-            </Button>
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              onClick={exitSelectionMode}
-              className="text-xs text-muted-foreground"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="xs"
-              variant="ghost"
-              disabled={selectedThreadIds.length === 0}
-              onClick={() =>
-                setThreadToDelete(
-                  selectedThreads.length === 1
-                    ? selectedThreads[0]
-                    : ({ thread_id: "__multi__", agent_key: null, step_count: 0 } as ThreadSummary),
-                )
-              }
-              className="text-xs text-destructive hover:text-destructive"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Delete
-            </Button>
-          </div>
+        <div
+          className={cn(
+            "mt-1.5 shrink-0 px-3 pb-2 flex items-center justify-end gap-1",
+          )}
+        >
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            onClick={toggleSelectAll}
+            className="text-xs text-muted-foreground"
+            disabled={!visibleThreads.length}
+          >
+            {allVisibleSelected ? "Clear all" : "Select all"}
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            onClick={exitSelectionMode}
+            className="text-xs text-muted-foreground"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            disabled={selectedConversationIds.length === 0}
+            onClick={() =>
+              setThreadToDelete(
+                selectedThreads.length === 1
+                  ? selectedThreads[0]
+                  : ({ conversation_id: "__multi__", thread_id: "__multi__", agent_key: null, step_count: 0 } as ThreadSummary),
+              )
+            }
+            className="text-xs text-destructive hover:text-destructive"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </Button>
         </div>
       )}
 
@@ -263,36 +281,36 @@ export function Sidebar() {
         )}
         {visibleThreads.map((t) => (
           <div
-            key={t.thread_id}
+            key={sessionIdForThread(t)}
             className={cn(
-              "mx-2 flex items-center gap-2 rounded-md border-b border-border/40 px-3 py-2 hover:bg-accent/60 transition-colors",
-              activeThread === t.thread_id && "bg-primary/10",
+              "mx-2 flex items-center gap-2 rounded-md border-b border-border/40 px-2.5 py-1 hover:bg-accent/60 transition-colors",
+              activeConversation === sessionIdForThread(t) && "bg-primary/10",
             )}
           >
             {selectionMode && (
               <button
                 type="button"
-                onClick={() => toggleThreadSelected(t.thread_id)}
+                onClick={() => toggleThreadSelected(sessionIdForThread(t))}
                 className={cn(
-                  "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors",
-                  selectedThreadIds.includes(t.thread_id)
+                  "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors",
+                  selectedConversationIds.includes(sessionIdForThread(t))
                     ? "border-primary bg-primary text-primary-foreground"
                     : "border-border bg-background",
                 )}
-                aria-label={`Select session ${t.thread_id.slice(0, 8)}`}
+                aria-label={`Select session ${sessionIdForThread(t).slice(0, 8)}`}
               >
-                {selectedThreadIds.includes(t.thread_id) ? <Check className="h-3 w-3" /> : null}
+                {selectedConversationIds.includes(sessionIdForThread(t)) ? <Check className="h-3 w-3" /> : null}
               </button>
             )}
             <button
               type="button"
               onClick={() =>
-                selectionMode ? toggleThreadSelected(t.thread_id) : navigate(`/sessions?thread=${t.thread_id}`)
+                selectionMode ? toggleThreadSelected(sessionIdForThread(t)) : navigate(`/sessions?conversation=${sessionIdForThread(t)}`)
               }
               className="min-w-0 flex-1 text-left"
             >
               <p className="text-xs truncate text-foreground">
-                <span className="font-mono font-medium">{t.thread_id.slice(0, 8)}</span>
+                <span className="font-mono font-medium">{sessionIdForThread(t).slice(0, 8)}</span>
                 <span className="text-muted-foreground/60"> · {t.agent_key ?? "unknown"} · {t.step_count}s</span>
               </p>
             </button>
@@ -301,8 +319,8 @@ export function Sidebar() {
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+                    size="icon-xs"
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
                   >
                     <MoreVertical className="h-4 w-4" />
                   </Button>
@@ -319,19 +337,36 @@ export function Sidebar() {
         ))}
       </div>
 
+      <div className="shrink-0 border-t border-border/50 px-4 py-3">
+        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                "h-2 w-2 rounded-full",
+                health.isLoading ? "bg-warning" : ok ? "bg-success" : "bg-destructive",
+              )}
+            />
+            <span>{health.isLoading ? "connecting" : ok ? "API ok" : "API down"}</span>
+          </div>
+          <Button variant="ghost" size="icon" onClick={toggle} aria-label="Toggle theme">
+            {resolved === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </Button>
+        </div>
+      </div>
+
       <Dialog open={!!threadToDelete} onOpenChange={(open) => !open && setThreadToDelete(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{threadToDelete?.thread_id === "__multi__" ? "Delete Sessions" : "Delete Session"}</DialogTitle>
             <DialogDescription>
               {threadToDelete?.thread_id === "__multi__"
-                ? `Delete ${selectedThreadIds.length} selected sessions and their saved messages from the checkpoint store. This cannot be undone.`
+                ? `Delete ${selectedConversationIds.length} selected sessions and their saved messages from the checkpoint store. This cannot be undone.`
                 : "Delete this session and its saved messages from the checkpoint store. This cannot be undone."}
             </DialogDescription>
           </DialogHeader>
-          {threadToDelete?.thread_id !== "__multi__" && (
+          {threadToDelete && threadToDelete.thread_id !== "__multi__" && (
             <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-              <span className="font-mono">{threadToDelete?.thread_id.slice(0, 8)}</span>
+              <span className="font-mono">{sessionIdForThread(threadToDelete).slice(0, 8)}</span>
               <span className="text-muted-foreground"> · {threadToDelete?.agent_key ?? "unknown"}</span>
             </div>
           )}
@@ -345,10 +380,10 @@ export function Sidebar() {
               onClick={() => {
                 if (!threadToDelete) return
                 if (threadToDelete.thread_id === "__multi__") {
-                  deleteThreads.mutate(selectedThreadIds)
+                  deleteThreads.mutate(selectedConversationIds)
                   return
                 }
-                deleteThread.mutate(threadToDelete.thread_id)
+                deleteThread.mutate(sessionIdForThread(threadToDelete))
               }}
             >
               {deleteThread.isPending || deleteThreads.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}

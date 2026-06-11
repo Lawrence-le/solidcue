@@ -21,7 +21,6 @@ def test_final_output_writes_only_final_response_from_synthesis_draft() -> None:
     )
 
     assert result["final_response"] == "Polished response from synthesis."
-    assert result["chat_history"] == [{"role": "assistant", "content": "Polished response from synthesis."}]
     assert "metric_final_output" in result
     assert isinstance(result["metric_final_output"], dict)
     for key in _DISALLOWED_FINAL_OUTPUT_WRITES:

@@ -54,6 +54,7 @@ class StreamAgentRequest(BaseModel):
     """
 
     thread_id: str | None = None
+    conversation_id: str | None = None
     user_input: str | None = None
     resume_value: str | None = None
 
@@ -77,4 +78,15 @@ class RunStatusResponse(BaseModel):
     agent_key: str | None = None
     status: Literal["idle", "running", "interrupted", "completed", "error", "cancelled", "disconnected"]
     error: str | None = None
+    updated_at: str | None = None
+
+
+class ConversationMetadataResponse(BaseModel):
+    conversation_id: str
+    agent_key: str | None = None
+    worked_seconds: int = 0
+    last_thread_id: str | None = None
+    last_run_id: str | None = None
+    last_run_status: str | None = None
+    created_at: str | None = None
     updated_at: str | None = None

@@ -9,6 +9,7 @@ from solidcue.agents.configs.loader import load_agent, load_agent_persona, load_
 from solidcue.core.execution.provider_resolver import get_provider_for_role
 from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
+from solidcue.services.chat_history_service import load_chat_history
 
 """
 Discovery Node - Function Overview
@@ -242,7 +243,7 @@ def discovery_node(state: AgentState) -> dict[str, Any]:
     metadata = dict(state.get("metadata", {}))
     target_artifacts_source = _build_target_artifacts_source(
         str(state.get("user_input") or ""),
-        state.get("chat_history") if isinstance(state.get("chat_history"), list) else None,
+        load_chat_history(state.get("conversation_id") or state.get("thread_id"), limit=12),
     )
     metadata["source_paths"] = source_paths
     metadata["output_paths"] = output_paths

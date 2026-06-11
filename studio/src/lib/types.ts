@@ -92,6 +92,7 @@ export interface DiscoveredTool {
 }
 
 export interface ThreadSummary {
+  conversation_id?: string
   thread_id: string
   agent_key: string | null
   step_count: number
@@ -100,6 +101,22 @@ export interface ThreadSummary {
 export interface LiveStateResponse {
   thread_id: string | null
   state: Record<string, unknown>
+}
+
+export interface ConversationThreadResponse {
+  conversation_id: string
+  thread_id: string | null
+}
+
+export interface ConversationMetadataResponse {
+  conversation_id: string
+  agent_key: string | null
+  worked_seconds: number
+  last_thread_id: string | null
+  last_run_id: string | null
+  last_run_status: "idle" | "running" | "interrupted" | "completed" | "error" | "cancelled" | "disconnected" | null
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface RunStatusResponse {

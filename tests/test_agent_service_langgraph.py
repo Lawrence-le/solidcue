@@ -21,10 +21,23 @@ def test_run_agent_uses_langgraph_invoke(monkeypatch) -> None:
     fake_agent = SimpleNamespace(agent_key="generic_assistant")
     fake_profile = SimpleNamespace(model_dump=lambda exclude_none=True: {"location": "Singapore"})
     fake_graph = _FakeGraph()
+    captured: list[tuple[str, str, str, str | None]] = []
 
     monkeypatch.setattr(agent_service_module, "load_agent", lambda _: fake_agent)
     monkeypatch.setattr(agent_service_module, "load_user_profile", lambda: fake_profile)
     monkeypatch.setattr(agent_service_module, "build_agent_graph", lambda: fake_graph)
+    monkeypatch.setattr(
+        agent_service_module,
+        "append_chat_message",
+        lambda **kwargs: captured.append(
+            (
+                kwargs["conversation_id"],
+                kwargs["role"],
+                kwargs["content"],
+                kwargs.get("agent_key"),
+            )
+        ),
+    )
 
     agent, result = agent_service_module.run_agent(
         "generic_assistant",
@@ -36,8 +49,8 @@ def test_run_agent_uses_langgraph_invoke(monkeypatch) -> None:
     assert agent.agent_key == "generic_assistant"
     assert fake_graph.invoked_with is not None
     assert fake_graph.invoked_with["agent_key"] == "generic_assistant"
+    assert fake_graph.invoked_with["thread_id"] == "thread-123"
     assert fake_graph.invoked_with["user_input"] == "hello"
-    assert fake_graph.invoked_with["chat_history"] == [{"role": "user", "content": "hello"}]
     assert fake_graph.invoked_with["config"] == {"location": "Singapore"}
     assert fake_graph.invoked_with["max_retries"] == 10
     assert fake_graph.invoked_config["run_name"] == "solidcue:generic_assistant"
@@ -45,6 +58,8 @@ def test_run_agent_uses_langgraph_invoke(monkeypatch) -> None:
     assert fake_graph.invoked_config["metadata"]["agent_key"] == "generic_assistant"
     assert fake_graph.invoked_config["metadata"]["location"] == "Singapore"
     assert fake_graph.invoked_config["configurable"]["thread_id"] == "thread-123"
+    assert captured[0] == ("thread-123", "user", "hello", "generic_assistant")
+    assert captured[-1] == ("thread-123", "assistant", "ok", "generic_assistant")
     assert result["workflow_status"] == "completed"
 
 
@@ -69,6 +84,7 @@ def test_run_agent_propagates_langfuse_session_id(monkeypatch) -> None:
     monkeypatch.setattr(agent_service_module, "propagate_langfuse_session", _propagate_langfuse_session)
     monkeypatch.setattr(agent_service_module, "start_langfuse_root_span", lambda **_: _propagate_langfuse_session(session_id="root"))
     monkeypatch.setattr(agent_service_module, "flush_langfuse", lambda: captured.setdefault("flushed", True))
+    monkeypatch.setattr(agent_service_module, "append_chat_message", lambda **_kwargs: None)
 
     _agent, _result = agent_service_module.run_agent(
         "generic_assistant",

@@ -1,11 +1,21 @@
 import sqlite3
 
+import pytest
+
+from solidcue.services.chat_history_service import (
+    append_chat_message,
+    get_conversation_metadata,
+    set_conversation_worked_seconds,
+)
 from solidcue.services.state_snapshot_service import (
     build_live_state_snapshot,
     build_state_snapshot,
+    delete_conversation_state,
     delete_thread_state,
     get_latest_thread_id,
+    is_conversation_resumable,
     list_agent_state_keys,
+    load_conversation_metadata,
 )
 
 
@@ -27,9 +37,6 @@ def test_build_state_snapshot_with_all_keys() -> None:
     assert "decision" in snapshot
     assert "retry_reason" in snapshot
 
-
-import pytest
-
 @pytest.mark.asyncio
 async def test_build_live_state_snapshot_with_selected_keys(monkeypatch) -> None:
     class _Snapshot:
@@ -50,6 +57,38 @@ async def test_build_live_state_snapshot_with_selected_keys(monkeypatch) -> None
     )
     snapshot = await build_live_state_snapshot(thread_id="t1", keys=["decision"], include_all=False)
     assert snapshot == {"decision": {"action": "respond"}}
+
+
+@pytest.mark.asyncio
+async def test_build_live_state_snapshot_merges_chat_history(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "checkpoints.sqlite"
+    monkeypatch.setenv("SOLIDCUE_CHECKPOINT_DB_PATH", str(db_path))
+
+    append_chat_message(conversation_id="conv-1", role="user", content="hello", agent_key="agent-1")
+    append_chat_message(conversation_id="conv-1", role="assistant", content="world", agent_key="agent-1")
+
+    class _Snapshot:
+        values = {"decision": {"action": "respond"}, "conversation_id": "conv-1"}
+        tasks = []
+        next = []
+
+    class _Graph:
+        async def aget_state(self, _config):
+            return _Snapshot()
+
+    async def _fake_build_async_agent_graph(**_kwargs):
+        return _Graph()
+
+    monkeypatch.setattr(
+        "solidcue.services.state_snapshot_service.build_async_agent_graph",
+        _fake_build_async_agent_graph,
+    )
+
+    snapshot = await build_live_state_snapshot(thread_id="t1", keys=["chat_history"], include_all=False)
+    assert snapshot["chat_history"] == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "world"},
+    ]
 
 
 def test_get_latest_thread_id_from_checkpoint_db(monkeypatch, tmp_path) -> None:
@@ -115,3 +154,92 @@ def test_delete_thread_state_returns_false_when_thread_missing(monkeypatch, tmp_
 
     monkeypatch.setenv("SOLIDCUE_CHECKPOINT_DB_PATH", str(db_path))
     assert delete_thread_state("thread-missing") is False
+
+
+def test_delete_conversation_state_removes_checkpoint_and_chat_history(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "checkpoints.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE checkpoints (thread_id TEXT, checkpoint_ns TEXT, metadata TEXT)")
+    cur.execute("INSERT INTO checkpoints (thread_id, checkpoint_ns, metadata) VALUES (?, ?, ?)", (
+        "thread-1",
+        "",
+        '{"conversation_id":"conv-1"}',
+    ))
+    cur.execute("INSERT INTO checkpoints (thread_id, checkpoint_ns, metadata) VALUES (?, ?, ?)", (
+        "thread-2",
+        "",
+        '{"conversation_id":"conv-2"}',
+    ))
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("SOLIDCUE_CHECKPOINT_DB_PATH", str(db_path))
+
+    append_chat_message(conversation_id="conv-1", role="user", content="hello")
+    append_chat_message(conversation_id="conv-2", role="user", content="world")
+    set_conversation_worked_seconds(conversation_id="conv-1", worked_seconds=12)
+
+    assert delete_conversation_state("conv-1") is True
+
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", ("thread-1",))
+    assert cur.fetchone() == (0,)
+    cur.execute("SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", ("thread-2",))
+    assert cur.fetchone() == (1,)
+    cur.execute("SELECT COUNT(*) FROM chat_history WHERE conversation_id = ?", ("conv-1",))
+    assert cur.fetchone() == (0,)
+    cur.execute("SELECT COUNT(*) FROM chat_history WHERE conversation_id = ?", ("conv-2",))
+    assert cur.fetchone() == (1,)
+    cur.execute("SELECT COUNT(*) FROM conversations WHERE conversation_id = ?", ("conv-1",))
+    assert cur.fetchone() == (0,)
+    conn.close()
+
+
+def test_load_conversation_metadata_returns_persisted_worked_seconds(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "checkpoints.sqlite"
+    monkeypatch.setenv("SOLIDCUE_CHECKPOINT_DB_PATH", str(db_path))
+
+    append_chat_message(
+        conversation_id="conv-1",
+        role="user",
+        content="hello",
+        agent_key="agent-1",
+    )
+    set_conversation_worked_seconds(
+        conversation_id="conv-1",
+        worked_seconds=7,
+        agent_key="agent-1",
+    )
+
+    metadata = load_conversation_metadata("conv-1")
+
+    assert metadata["conversation_id"] == "conv-1"
+    assert metadata["agent_key"] == "agent-1"
+    assert metadata["worked_seconds"] == 7
+    assert get_conversation_metadata("conv-1") == metadata
+
+
+@pytest.mark.asyncio
+async def test_is_conversation_resumable_uses_latest_thread(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "solidcue.services.state_snapshot_service.get_latest_thread_id_for_conversation",
+        lambda conversation_id: "thread-123" if conversation_id == "conv-1" else None,
+    )
+
+    async def _fake_is_thread_resumable(thread_id: str) -> dict[str, object]:
+      return {"resumable": True, "next_nodes": ["execution"]} if thread_id == "thread-123" else {"resumable": False, "next_nodes": []}
+
+    monkeypatch.setattr(
+        "solidcue.services.state_snapshot_service.is_thread_resumable",
+        _fake_is_thread_resumable,
+    )
+
+    payload = await is_conversation_resumable("conv-1")
+
+    assert payload == {
+        "resumable": True,
+        "next_nodes": ["execution"],
+        "thread_id": "thread-123",
+    }

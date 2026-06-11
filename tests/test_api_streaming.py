@@ -76,6 +76,10 @@ async def test_stream_agent_events_streams_final_output_and_persists_state(
         "solidcue.services.run_engine.prepare_final_output_stream",
         lambda state: (_Provider(), [{"role": "user", "content": "hi"}]),
     )
+    monkeypatch.setattr(
+        "solidcue.services.run_engine.append_chat_message",
+        lambda **_kwargs: None,
+    )
 
     async def _fake_build_async_agent_graph(*, streaming_final_output=False):
         return fake_graph
@@ -153,6 +157,10 @@ async def test_stream_agent_events_propagates_langfuse_session_id(
     monkeypatch.setattr(
         "solidcue.services.run_engine.prepare_final_output_stream",
         lambda state: None,
+    )
+    monkeypatch.setattr(
+        "solidcue.services.run_engine.append_chat_message",
+        lambda **_kwargs: None,
     )
     monkeypatch.setattr(
         "solidcue.services.run_engine.propagate_langfuse_session",

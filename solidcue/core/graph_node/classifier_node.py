@@ -7,6 +7,7 @@ from solidcue.core.execution.provider_resolver import get_provider_for_role
 from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 from solidcue.prompts.classifier_prompt import build_classifier_messages
+from solidcue.services.chat_history_service import load_chat_history
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +65,14 @@ def classifier_node(state: AgentState) -> dict[str, Any]:
         return {"phase": "conversational", "router_next": "final_output", "final_response": ""}
 
     agent = load_agent(agent_key)
+    conversation_id = state.get("conversation_id") or state.get("thread_id")
     # Phase 2: build classifier prompt and infer intent.
     messages = build_classifier_messages(
         user_input=user_input,
         persona=load_agent_persona(agent_key),
         agent_name=agent.name or "",
         agent_description=agent.description or "",
-        chat_history=state.get("chat_history") if isinstance(state.get("chat_history"), list) else None,
+        chat_history=load_chat_history(conversation_id, limit=8),
     )
 
     provider = get_provider_for_role(agent, "lite")

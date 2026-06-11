@@ -1,15 +1,17 @@
 import { useCallback, useRef, useState } from "react"
-import { Outlet } from "react-router-dom"
+import { Outlet, useLocation } from "react-router-dom"
+import { cn } from "@/lib/utils"
 import { Sidebar } from "./Sidebar"
-import { TopBar } from "./TopBar"
 
 const MIN_WIDTH = 160
 const MAX_WIDTH = 400
 const DEFAULT_WIDTH = 224 // w-56
 
 export function AppLayout() {
+  const location = useLocation()
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH)
   const dragging = useRef(false)
+  const isSessionsPage = location.pathname === "/sessions"
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -42,8 +44,12 @@ export function AppLayout() {
         className="w-1 shrink-0 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 transition-colors"
       />
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar />
-        <main className="flex-1 overflow-y-auto p-6">
+        <main
+          className={cn(
+            "flex-1 overflow-y-auto",
+            isSessionsPage ? "min-h-0 p-0" : "p-6",
+          )}
+        >
           <Outlet />
         </main>
       </div>

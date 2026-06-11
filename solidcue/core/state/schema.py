@@ -13,6 +13,8 @@ class ToolCallState(TypedDict):
 class AgentState(TypedDict, total=False):
     # --- Identity / request context ---
     agent_key: str
+    thread_id: str
+    conversation_id: str
     user_input: str
     config: dict[str, Any]
     metadata: dict[str, Any]

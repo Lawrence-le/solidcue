@@ -288,6 +288,5 @@ def final_output_node(state: AgentState) -> dict[str, Any]:
 
     return {
         "final_response": final_output,
-        "chat_history": [{"role": "assistant", "content": final_output}] if final_output else [],
         **build_metric_state_delta("final_output", "metric_final_output", metric_final_output),
     }

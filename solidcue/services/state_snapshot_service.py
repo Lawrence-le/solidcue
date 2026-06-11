@@ -7,10 +7,19 @@ from typing import Any
 
 from solidcue.core.graph.builder import build_agent_graph, build_async_agent_graph
 from solidcue.core.state.schema import AgentState
+from solidcue.services.run_engine import is_thread_resumable
+from solidcue.services.chat_history_service import (
+    delete_chat_history,
+    delete_conversation_metadata,
+    get_conversation_metadata,
+    load_chat_history,
+)
 
 
 _EXAMPLE_STATE: dict[str, Any] = {
     "agent_key": "example_agent",
+    "thread_id": "example_thread",
+    "conversation_id": "example_conversation",
     "user_input": "Example user input",
     "config": {"location": "example-location"},
     "metadata": {
@@ -121,9 +130,12 @@ async def load_live_state(thread_id: str) -> dict[str, Any]:
     graph = await build_async_agent_graph()
     snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
     values = getattr(snapshot, "values", None)
-    if isinstance(values, dict):
-        return values
-    return {}
+    state = values if isinstance(values, dict) else {}
+    if isinstance(state, dict):
+        state = dict(state)
+        conversation_id = state.get("conversation_id") if isinstance(state.get("conversation_id"), str) else None
+        state["chat_history"] = load_chat_history(conversation_id or thread_id)
+    return state
 
 
 async def build_live_state_snapshot(
@@ -155,6 +167,37 @@ def get_latest_thread_id() -> str | None:
         conn = sqlite3.connect(str(db_path))
         cur = conn.cursor()
         cur.execute("SELECT thread_id FROM checkpoints ORDER BY rowid DESC LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        thread_id = row[0]
+        return str(thread_id) if isinstance(thread_id, str) and thread_id.strip() else None
+    except Exception:
+        return None
+
+
+def get_latest_thread_id_for_conversation(conversation_id: str) -> str | None:
+    normalized_conversation_id = conversation_id.strip() if isinstance(conversation_id, str) else ""
+    if not normalized_conversation_id:
+        return None
+    db_path = resolve_checkpoint_db_path()
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT thread_id
+            FROM checkpoints
+            WHERE checkpoint_ns = ''
+              AND json_extract(metadata, '$.conversation_id') = ?
+            ORDER BY rowid DESC
+            LIMIT 1
+            """,
+            (normalized_conversation_id,),
+        )
         row = cur.fetchone()
         conn.close()
         if not row:
@@ -198,3 +241,78 @@ def delete_thread_state(thread_id: str) -> bool:
         return deleted_any
     finally:
         conn.close()
+
+
+def delete_conversation_state(conversation_id: str) -> bool:
+    normalized_conversation_id = conversation_id.strip() if isinstance(conversation_id, str) else ""
+    if not normalized_conversation_id:
+        return False
+
+    db_path = resolve_checkpoint_db_path()
+    deleted_checkpoint_rows = False
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT DISTINCT thread_id
+                    FROM checkpoints
+                    WHERE checkpoint_ns = ''
+                      AND json_extract(metadata, '$.conversation_id') = ?
+                    """,
+                    (normalized_conversation_id,),
+                )
+                thread_ids = [str(row[0]) for row in cur.fetchall() if row and isinstance(row[0], str) and row[0].strip()]
+                deleted_checkpoint_rows = False
+                for thread_id in thread_ids:
+                    deleted_checkpoint_rows = delete_thread_state(thread_id) or deleted_checkpoint_rows
+            finally:
+                conn.close()
+        except Exception:
+            deleted_checkpoint_rows = False
+
+    deleted_chat_rows = delete_chat_history(normalized_conversation_id)
+    deleted_conversation_row = delete_conversation_metadata(normalized_conversation_id)
+    return deleted_checkpoint_rows or deleted_chat_rows or deleted_conversation_row
+
+
+def load_conversation_metadata(conversation_id: str) -> dict[str, Any]:
+    metadata = get_conversation_metadata(conversation_id)
+    if metadata:
+        return metadata
+    normalized_conversation_id = conversation_id.strip() if isinstance(conversation_id, str) else ""
+    return {
+        "conversation_id": normalized_conversation_id,
+        "agent_key": None,
+        "worked_seconds": 0,
+        "last_thread_id": None,
+        "last_run_id": None,
+        "last_run_status": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+async def load_live_state_for_conversation(conversation_id: str) -> dict[str, Any]:
+    thread_id = get_latest_thread_id_for_conversation(conversation_id)
+    if not thread_id:
+        return {}
+    return await load_live_state(thread_id)
+
+
+async def get_conversation_interrupt_payload(conversation_id: str) -> dict[str, Any] | None:
+    thread_id = get_latest_thread_id_for_conversation(conversation_id)
+    if not thread_id:
+        return None
+    return await get_thread_interrupt_payload(thread_id)
+
+
+async def is_conversation_resumable(conversation_id: str) -> dict[str, Any]:
+    thread_id = get_latest_thread_id_for_conversation(conversation_id)
+    if not thread_id:
+        return {"resumable": False, "next_nodes": [], "thread_id": None}
+    payload = await is_thread_resumable(thread_id)
+    payload["thread_id"] = thread_id
+    return payload

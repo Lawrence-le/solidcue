@@ -36,6 +36,7 @@ from solidcue.services.run_engine import (
     run_agent_step,
     start_run,
 )
+from solidcue.services.state_snapshot_service import get_latest_thread_id_for_conversation
 from solidcue.services.thread_service import create_thread_id
 
 
@@ -107,13 +108,15 @@ def _sse_frame(event: str, data: dict[str, object]) -> str:
 async def _stream_agent_sse(
     *,
     agent_key: str,
-    thread_id: str,
+    thread_id: str | None,
+    conversation_id: str | None = None,
     user_input: str | None = None,
     resume_value: str | None = None,
 ) -> AsyncIterator[str]:
     run_id = await start_run(
         agent_key=agent_key,
         thread_id=thread_id,
+        conversation_id=conversation_id,
         user_input=user_input,
         resume_value=resume_value,
     )
@@ -188,19 +191,27 @@ async def stream(agent_key: str, request: StreamAgentRequest) -> StreamingRespon
     _validate_key(agent_key)
     is_continue = request.resume_value is None and request.user_input is None
     if is_continue and not request.thread_id:
-        raise HTTPException(status_code=400, detail="user_input, resume_value, or thread_id is required")
-    if request.resume_value is not None and not request.thread_id:
-        raise HTTPException(status_code=400, detail="thread_id is required to resume")
+        if not request.conversation_id:
+            raise HTTPException(status_code=400, detail="user_input, resume_value, thread_id, or conversation_id is required")
+    if request.resume_value is not None and not request.thread_id and not request.conversation_id:
+        raise HTTPException(status_code=400, detail="thread_id or conversation_id is required to resume")
 
     # Validate the agent exists up front so a missing agent is a clean 404,
     # before we switch into a 200 streaming response.
     if not get_agent_path(agent_key).exists():
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_key}")
 
-    thread_id = request.thread_id or create_thread_id()
+    resolved_thread_id = request.thread_id
+    if not resolved_thread_id and request.conversation_id:
+        resolved_thread_id = get_latest_thread_id_for_conversation(request.conversation_id)
+    if not resolved_thread_id and request.resume_value is None:
+        resolved_thread_id = create_thread_id()
+    if request.resume_value is not None and not resolved_thread_id:
+        raise HTTPException(status_code=400, detail="No existing thread found for conversation_id")
     generator = _stream_agent_sse(
         agent_key=agent_key,
-        thread_id=thread_id,
+        thread_id=resolved_thread_id,
+        conversation_id=request.conversation_id,
         user_input=request.user_input,
         resume_value=request.resume_value,
     )

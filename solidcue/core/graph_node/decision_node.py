@@ -11,6 +11,7 @@ from solidcue.core.state.schema import AgentState, ToolCallState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 from solidcue.prompts.decision_prompt import build_decision_messages
 from solidcue.tools.loader import load_tool, get_missing_required_tool_fields, split_missing_tool_fields
+from solidcue.services.chat_history_service import load_chat_history
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,7 @@ def decision_node(state: AgentState) -> dict[str, Any]:
         retry_reason=state.get("retry_reason"),
         metadata=metadata,
         tool_call_history=scoped_tool_call_history,
-        chat_history=state.get("chat_history") if isinstance(state.get("chat_history"), list) else None,
+        chat_history=load_chat_history(state.get("conversation_id") or state.get("thread_id"), limit=12),
     )
     provider = get_provider_for_role(agent_config, "brain")
     output_text, metric_decision = timed_generate(provider, messages, node_name="decision")

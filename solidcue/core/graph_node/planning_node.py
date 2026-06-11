@@ -9,6 +9,7 @@ from solidcue.core.execution.provider_resolver import get_provider_for_role
 from solidcue.core.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 from solidcue.prompts.planning_prompt import build_planning_messages
+from solidcue.services.chat_history_service import load_chat_history
 
 logger = logging.getLogger(__name__)
 _VAGUE_REQUIRES = {"data", "details", "information", "context", "output", "done"}
@@ -112,6 +113,7 @@ def _llm_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     Returns a list of tasks with type, description, requires, and status.
     """
     user_input = state.get("user_input", "")
+    conversation_id = state.get("conversation_id") or state.get("thread_id")
 
     try:
         agent_key = state.get("agent_key")
@@ -125,7 +127,7 @@ def _llm_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             skill_guidance=load_agent_skill(agent_key),
             tools_guidance=load_agent_tools(agent_key),
             metadata=state.get("metadata") if isinstance(state.get("metadata"), dict) else {},
-            chat_history=state.get("chat_history") if isinstance(state.get("chat_history"), list) else None,
+            chat_history=load_chat_history(conversation_id, limit=12),
         )
         response_text, metric_stats = timed_generate(provider, messages, node_name="planning")
         logger.debug("planning LLM raw response (type=%s): %s", type(response_text).__name__, repr(response_text)[:500])
@@ -463,6 +465,7 @@ def _conversational_response(state: AgentState) -> dict[str, Any]:
         return {"final_response": "", "router_next": "final_output"}
 
     user_input = state.get("user_input", "")
+    conversation_id = state.get("conversation_id") or state.get("thread_id")
     agent = load_agent(agent_key)
     skill = load_agent_skill(agent_key)
     tools = load_agent_tools(agent_key)
@@ -482,7 +485,7 @@ def _conversational_response(state: AgentState) -> dict[str, Any]:
             "role": "user",
             "content": (
                 "Recent conversation:\n"
-                f"{_format_chat_history(state.get('chat_history') if isinstance(state.get('chat_history'), list) else None)}\n\n"
+                f"{_format_chat_history(load_chat_history(conversation_id, limit=12))}\n\n"
                 f"Current user request:\n{user_input}"
             ),
         },
