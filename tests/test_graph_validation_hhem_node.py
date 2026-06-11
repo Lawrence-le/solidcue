@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from solidcue.core.graph_node.validation_hhem_node import (
+from solidcue.core.graph_agent.nodes.validation_hhem_node import (
     validation_hhem_node,
     _split_claims,
     _build_premise,
@@ -43,7 +43,7 @@ def test_no_premise_skips_with_pass():
     assert result["validation_report"]["score"] == 1.0
 
 
-@patch("solidcue.core.graph_node.validation_hhem_node._score_groundedness")
+@patch("solidcue.core.graph_agent.nodes.validation_hhem_node._score_groundedness")
 def test_all_claims_grounded_passes(mock_score):
     mock_score.return_value = (0.85, [{"claim": "Python is a language.", "score": 0.85}], {})
     result = validation_hhem_node(_make_state(
@@ -54,8 +54,8 @@ def test_all_claims_grounded_passes(mock_score):
     assert result["validation_report"]["score"] == 0.85
 
 
-@patch("solidcue.core.graph_node.validation_hhem_node._llm_verify_failures")
-@patch("solidcue.core.graph_node.validation_hhem_node._score_groundedness")
+@patch("solidcue.core.graph_agent.nodes.validation_hhem_node._llm_verify_failures")
+@patch("solidcue.core.graph_agent.nodes.validation_hhem_node._score_groundedness")
 def test_hhem_fails_but_llm_clears_metadata(mock_score, mock_llm):
     mock_score.return_value = (0.01, [
         {"claim": "# Darren Liew", "score": 0.01},
@@ -71,8 +71,8 @@ def test_hhem_fails_but_llm_clears_metadata(mock_score, mock_llm):
     assert "metadata" in result["validation_report"]["reason"].lower()
 
 
-@patch("solidcue.core.graph_node.validation_hhem_node._llm_verify_failures")
-@patch("solidcue.core.graph_node.validation_hhem_node._score_groundedness")
+@patch("solidcue.core.graph_agent.nodes.validation_hhem_node._llm_verify_failures")
+@patch("solidcue.core.graph_agent.nodes.validation_hhem_node._score_groundedness")
 def test_hhem_fails_and_llm_confirms_hallucination(mock_score, mock_llm):
     mock_score.return_value = (0.1, [
         {"claim": "Managed a $2M budget annually.", "score": 0.1},
@@ -87,7 +87,7 @@ def test_hhem_fails_and_llm_confirms_hallucination(mock_score, mock_llm):
     assert "Managed a $2M budget" in result["validation_report"]["reason"]
 
 
-@patch("solidcue.core.graph_node.validation_hhem_node._score_groundedness")
+@patch("solidcue.core.graph_agent.nodes.validation_hhem_node._score_groundedness")
 def test_no_premise_from_handoff_skips_scoring(mock_score):
     mock_score.return_value = (0.7, [{"claim": "The answer is 42.", "score": 0.7}], {})
     result = validation_hhem_node(_make_state(
@@ -179,7 +179,7 @@ def test_score_groundedness_scores_all_premise_chunks(monkeypatch):
             return [0.9 if "late grounding" in pair[0] else 0.1 for pair in pairs]
 
     monkeypatch.setattr(
-        "solidcue.core.graph_node.validation_hhem_node.get_hhem_model",
+        "solidcue.core.graph_agent.nodes.validation_hhem_node.get_hhem_model",
         lambda: FakeModel(),
     )
     premise = ("early unrelated content.\n\n" * 20) + "late grounding evidence supports Redis."
@@ -198,11 +198,11 @@ def test_llm_verify_uses_max_tokens_cap(monkeypatch):
         model = "test-model"
 
     monkeypatch.setattr(
-        "solidcue.core.graph_node.validation_hhem_node.load_agent",
+        "solidcue.core.graph_agent.nodes.validation_hhem_node.load_agent",
         lambda _: object(),
     )
     monkeypatch.setattr(
-        "solidcue.core.graph_node.validation_hhem_node.get_provider_for_role",
+        "solidcue.core.graph_agent.nodes.validation_hhem_node.get_provider_for_role",
         lambda _agent, _role: Provider(),
     )
 
@@ -212,11 +212,11 @@ def test_llm_verify_uses_max_tokens_cap(monkeypatch):
         return '{"real_failures": [], "reason": "ok"}', {"tokens": {}, "time_s": 0.0, "model": "test-model"}
 
     monkeypatch.setattr(
-        "solidcue.core.graph_node.validation_hhem_node.timed_generate",
+        "solidcue.core.graph_agent.nodes.validation_hhem_node.timed_generate",
         fake_timed_generate,
     )
 
-    from solidcue.core.graph_node.validation_hhem_node import _llm_verify_failures
+    from solidcue.core.graph_agent.nodes.validation_hhem_node import _llm_verify_failures
 
     real_failures, _, _ = _llm_verify_failures(
         {"agent_key": "test_agent"},

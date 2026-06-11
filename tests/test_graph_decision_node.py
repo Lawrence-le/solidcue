@@ -1,5 +1,5 @@
-from solidcue.core.graph_node import decision_node as decision_node_module
-from solidcue.core.graph_node.decision_node import decision_node
+import importlib as _il; decision_node_module = _il.import_module("solidcue.core.graph_agent.nodes.decision_node")
+from solidcue.core.graph_agent.nodes.decision_node import decision_node
 
 
 class _FakeProvider:

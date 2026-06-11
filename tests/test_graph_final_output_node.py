@@ -1,4 +1,4 @@
-from solidcue.core.graph_node.final_output_node import _compact_successful_tool_history, final_output_node
+from solidcue.core.graph_agent.nodes.final_output_node import _compact_successful_tool_history, final_output_node
 
 
 _DISALLOWED_FINAL_OUTPUT_WRITES = (

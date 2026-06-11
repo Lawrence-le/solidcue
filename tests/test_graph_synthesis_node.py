@@ -1,5 +1,5 @@
-from solidcue.core.graph_node import synthesis_node as synthesis_module
-from solidcue.core.graph_node.synthesis_node import synthesis_node
+import importlib as _il; synthesis_module = _il.import_module("solidcue.core.graph_agent.nodes.synthesis_node")
+from solidcue.core.graph_agent.nodes.synthesis_node import synthesis_node
 
 
 _DISALLOWED_SYNTHESIS_WRITES = (

@@ -1,6 +1,6 @@
-from solidcue.core.graph_node import validation_llm_node as validation_module
-from solidcue.core.graph_node.validation_llm_node import validation_llm_node as validation_node
-from solidcue.prompts.validation_llm_system_prompt import build_validation_llm_system_prompt
+import importlib as _il; validation_module = _il.import_module("solidcue.core.graph_agent.nodes.validation_llm_node")
+from solidcue.core.graph_agent.nodes.validation_llm_node import validation_llm_node as validation_node
+from solidcue.core.graph_agent.prompts.validation_llm_system_prompt import build_validation_llm_system_prompt
 
 
 def test_validation_prompt_checks_spelling() -> None:

@@ -5,8 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from solidcue.core.graph.builder import build_agent_graph, build_async_agent_graph
-from solidcue.core.state.schema import AgentState
+from solidcue.core.graph_agent.builder import build_agent_graph, build_async_agent_graph
+from solidcue.core.graph_agent.state.schema import AgentState
 from solidcue.services.run_engine import is_thread_resumable
 from solidcue.services.chat_history_service import (
     delete_chat_history,
@@ -22,6 +22,8 @@ _EXAMPLE_STATE: dict[str, Any] = {
     "conversation_id": "example_conversation",
     "user_input": "Example user input",
     "config": {"location": "example-location"},
+    "worked_seconds": 0,
+    "timer_started_at": None,
     "metadata": {
         "source_paths": ["example/source"],
         "output_paths": ["example/output"],
@@ -287,6 +289,7 @@ def load_conversation_metadata(conversation_id: str) -> dict[str, Any]:
         "conversation_id": normalized_conversation_id,
         "agent_key": None,
         "worked_seconds": 0,
+        "timer_started_at": None,
         "last_thread_id": None,
         "last_run_id": None,
         "last_run_status": None,

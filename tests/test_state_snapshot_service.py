@@ -5,7 +5,6 @@ import pytest
 from solidcue.services.chat_history_service import (
     append_chat_message,
     get_conversation_metadata,
-    set_conversation_worked_seconds,
 )
 from solidcue.services.state_snapshot_service import (
     build_live_state_snapshot,
@@ -178,7 +177,6 @@ def test_delete_conversation_state_removes_checkpoint_and_chat_history(monkeypat
 
     append_chat_message(conversation_id="conv-1", role="user", content="hello")
     append_chat_message(conversation_id="conv-2", role="user", content="world")
-    set_conversation_worked_seconds(conversation_id="conv-1", worked_seconds=12)
 
     assert delete_conversation_state("conv-1") is True
 
@@ -207,18 +205,48 @@ def test_load_conversation_metadata_returns_persisted_worked_seconds(monkeypatch
         content="hello",
         agent_key="agent-1",
     )
-    set_conversation_worked_seconds(
-        conversation_id="conv-1",
-        worked_seconds=7,
-        agent_key="agent-1",
-    )
 
     metadata = load_conversation_metadata("conv-1")
 
     assert metadata["conversation_id"] == "conv-1"
     assert metadata["agent_key"] == "agent-1"
-    assert metadata["worked_seconds"] == 7
+    assert metadata["worked_seconds"] == 0
     assert get_conversation_metadata("conv-1") == metadata
+
+
+def test_chat_history_service_migrates_conversations_without_worked_seconds(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "checkpoints.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            agent_key TEXT,
+            worked_seconds INTEGER NOT NULL DEFAULT 0,
+            last_thread_id TEXT,
+            last_run_id TEXT,
+            last_run_status TEXT,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("SOLIDCUE_CHECKPOINT_DB_PATH", str(db_path))
+
+    append_chat_message(conversation_id="conv-legacy", role="user", content="hello")
+
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(conversations)")
+    columns = [row[1] for row in cur.fetchall() if len(row) > 1]
+    assert "worked_seconds" not in columns
+    cur.execute("SELECT conversation_id, agent_key FROM conversations WHERE conversation_id = ?", ("conv-legacy",))
+    assert cur.fetchone() == ("conv-legacy", None)
+    conn.close()
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,6 @@ def ensure_chat_history_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
             agent_key TEXT,
-            worked_seconds INTEGER NOT NULL DEFAULT 0,
             last_thread_id TEXT,
             last_run_id TEXT,
             last_run_status TEXT,
@@ -43,6 +42,47 @@ def ensure_chat_history_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(conversations)")
+    columns = {row[1] for row in cur.fetchall() if len(row) > 1 and isinstance(row[1], str)}
+    if "worked_seconds" in columns:
+        conn.execute("ALTER TABLE conversations RENAME TO conversations_legacy")
+        conn.execute(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                agent_key TEXT,
+                last_thread_id TEXT,
+                last_run_id TEXT,
+                last_run_status TEXT,
+                created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+                updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO conversations (
+                conversation_id,
+                agent_key,
+                last_thread_id,
+                last_run_id,
+                last_run_status,
+                created_at,
+                updated_at
+            )
+            SELECT
+                conversation_id,
+                agent_key,
+                last_thread_id,
+                last_run_id,
+                last_run_status,
+                created_at,
+                updated_at
+            FROM conversations_legacy
+            """
+        )
+        conn.execute("DROP TABLE conversations_legacy")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_history (

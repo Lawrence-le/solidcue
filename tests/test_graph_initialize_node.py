@@ -1,8 +1,8 @@
 import importlib
 
-from solidcue.core.graph_node.initialize_node import initialize_node
+from solidcue.core.graph_agent.nodes.initialize_node import initialize_node
 
-initialize_module = importlib.import_module("solidcue.core.graph_node.initialize_node")
+initialize_module = importlib.import_module("solidcue.core.graph_agent.nodes.initialize_node")
 
 
 _DISALLOWED_INITIALIZE_WRITES = (

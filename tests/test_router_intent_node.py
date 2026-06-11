@@ -1,4 +1,4 @@
-from solidcue.core.router_graph.router_node.intent_router_node import intent_router_node
+from solidcue.core.graph_router.nodes.intent_router_node import intent_router_node
 
 
 def test_intent_router_clarifies_capability_question_before_task() -> None:

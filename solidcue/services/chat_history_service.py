@@ -25,7 +25,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
             agent_key TEXT,
-            worked_seconds INTEGER NOT NULL DEFAULT 0,
             last_thread_id TEXT,
             last_run_id TEXT,
             last_run_status TEXT,
@@ -37,6 +36,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     cur.execute("PRAGMA table_info(conversations)")
     columns = {row[1] for row in cur.fetchall() if len(row) > 1 and isinstance(row[1], str)}
+    if "worked_seconds" in columns:
+        _migrate_conversations_schema(conn, columns)
+        cur.execute("PRAGMA table_info(conversations)")
+        columns = {row[1] for row in cur.fetchall() if len(row) > 1 and isinstance(row[1], str)}
     if "last_thread_id" not in columns:
         conn.execute("ALTER TABLE conversations ADD COLUMN last_thread_id TEXT")
     if "last_run_id" not in columns:
@@ -59,6 +62,49 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_chat_history_{column}_id ON chat_history({column}, id)"
     )
+
+
+def _migrate_conversations_schema(conn: sqlite3.Connection, columns: set[str]) -> None:
+    preserved_columns = [
+        column
+        for column in (
+            "conversation_id",
+            "agent_key",
+            "last_thread_id",
+            "last_run_id",
+            "last_run_status",
+            "created_at",
+            "updated_at",
+        )
+        if column in columns
+    ]
+    if not preserved_columns:
+        return
+
+    conn.execute("ALTER TABLE conversations RENAME TO conversations_legacy")
+    conn.execute(
+        """
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            agent_key TEXT,
+            last_thread_id TEXT,
+            last_run_id TEXT,
+            last_run_status TEXT,
+            created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+        )
+        """
+    )
+    select_list = ", ".join(preserved_columns)
+    insert_list = ", ".join(preserved_columns)
+    conn.execute(
+        f"""
+        INSERT INTO conversations ({insert_list})
+        SELECT {select_list}
+        FROM conversations_legacy
+        """
+    )
+    conn.execute("DROP TABLE conversations_legacy")
 
 
 def _upsert_conversation(
@@ -169,78 +215,6 @@ def update_conversation_run_state(
         conn.commit()
 
 
-def set_conversation_worked_seconds(
-    *,
-    conversation_id: str,
-    worked_seconds: int,
-    agent_key: str | None = None,
-) -> None:
-    normalized_conversation_id = (
-        conversation_id.strip() if isinstance(conversation_id, str) else ""
-    )
-    if not normalized_conversation_id:
-        return
-
-    normalized_agent_key = (
-        agent_key.strip() if isinstance(agent_key, str) and agent_key.strip() else None
-    )
-    normalized_worked_seconds = max(0, int(worked_seconds))
-    with _connect() as conn:
-        _ensure_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO conversations (conversation_id, agent_key, worked_seconds)
-            VALUES (?, ?, ?)
-            ON CONFLICT(conversation_id) DO UPDATE SET
-                agent_key = COALESCE(excluded.agent_key, conversations.agent_key),
-                worked_seconds = excluded.worked_seconds,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                normalized_conversation_id,
-                normalized_agent_key,
-                normalized_worked_seconds,
-            ),
-        )
-        conn.commit()
-
-
-def add_conversation_worked_seconds(
-    *,
-    conversation_id: str,
-    worked_seconds: int,
-    agent_key: str | None = None,
-) -> None:
-    normalized_conversation_id = (
-        conversation_id.strip() if isinstance(conversation_id, str) else ""
-    )
-    if not normalized_conversation_id:
-        return
-
-    normalized_agent_key = (
-        agent_key.strip() if isinstance(agent_key, str) and agent_key.strip() else None
-    )
-    increment_seconds = max(0, int(worked_seconds))
-    with _connect() as conn:
-        _ensure_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO conversations (conversation_id, agent_key, worked_seconds)
-            VALUES (?, ?, ?)
-            ON CONFLICT(conversation_id) DO UPDATE SET
-                agent_key = COALESCE(excluded.agent_key, conversations.agent_key),
-                worked_seconds = conversations.worked_seconds + excluded.worked_seconds,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                normalized_conversation_id,
-                normalized_agent_key,
-                increment_seconds,
-            ),
-        )
-        conn.commit()
-
-
 def get_conversation_metadata(conversation_id: str) -> dict[str, Any] | None:
     normalized_conversation_id = (
         conversation_id.strip() if isinstance(conversation_id, str) else ""
@@ -253,7 +227,7 @@ def get_conversation_metadata(conversation_id: str) -> dict[str, Any] | None:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT conversation_id, agent_key, worked_seconds, created_at, updated_at
+            SELECT conversation_id, agent_key, created_at, updated_at
                  , last_thread_id, last_run_id, last_run_status
             FROM conversations
             WHERE conversation_id = ?
@@ -268,12 +242,12 @@ def get_conversation_metadata(conversation_id: str) -> dict[str, Any] | None:
     return {
         "conversation_id": row[0],
         "agent_key": row[1],
-        "worked_seconds": int(row[2]) if row[2] is not None else 0,
-        "created_at": row[3],
-        "updated_at": row[4],
-        "last_thread_id": row[5],
-        "last_run_id": row[6],
-        "last_run_status": row[7],
+        "worked_seconds": 0,
+        "created_at": row[2],
+        "updated_at": row[3],
+        "last_thread_id": row[4],
+        "last_run_id": row[5],
+        "last_run_status": row[6],
     }
 
 

@@ -65,6 +65,8 @@ class _RouterGraph:
                 "router_intent": "task",
                 "router_next": "handoff",
                 "target_agent_key": "resume_builder",
+                "assistant_draft": "Sure, I will help you generate a resume based on your request.",
+                "final_response": "Sure, I will help you generate a resume based on your request.",
                 "handoff": {
                     "action": "route_agent",
                     "task_input": "build my resume",
@@ -215,7 +217,7 @@ async def test_stream_agent_events_propagates_langfuse_session_id(
 async def test_stream_router_chat_events_hands_off_to_agent(
     monkeypatch,
 ) -> None:
-    router_graph = _RouterGraph()
+    graph_router = _RouterGraph()
     captured: dict[str, object] = {}
 
     async def _fake_stream_agent_events(**kwargs):
@@ -233,7 +235,7 @@ async def test_stream_router_chat_events_hands_off_to_agent(
         yield
 
     async def _fake_build_async_router_graph():
-        return router_graph
+        return graph_router
 
     monkeypatch.setattr(
         "solidcue.services.run_engine.configure_langsmith_tracing_env", lambda: None
@@ -272,7 +274,10 @@ async def test_stream_router_chat_events_hands_off_to_agent(
         )
     ]
 
+    event_names = [event["event"] for event in events]
     assert events[0]["event"] == "start"
+    assert event_names.index("message_start") > event_names.index("node")
+    assert event_names.index("message_delta") > event_names.index("message_start")
     assert any(event["event"] == "handoff" for event in events)
     assert events[-1]["event"] == "completed"
     assert captured["agent_kwargs"]["agent_key"] == "resume_builder"

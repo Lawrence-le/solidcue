@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+import struct
 from typing import Any
 
 
@@ -68,6 +69,150 @@ def parse_jsonish(value: Any) -> Any:
             except Exception:
                 return value
     return value
+
+
+def parse_checkpoint_payload(value: Any) -> Any:
+    parsed = parse_jsonish(value)
+    if isinstance(parsed, dict):
+        return parsed
+
+    raw = value if isinstance(value, bytes) else None
+    if raw:
+        try:
+            import msgpack  # type: ignore
+
+            unpacked = msgpack.unpackb(raw, raw=False)
+            if isinstance(unpacked, dict):
+                return unpacked
+        except Exception:
+            try:
+                unpacked = decode_msgpack(raw)
+                if isinstance(unpacked, dict):
+                    return unpacked
+            except Exception:
+                pass
+
+    return parsed
+
+
+def decode_msgpack(data: bytes) -> Any:
+    """Decode the msgpack subset used by LangGraph checkpoints.
+
+    This intentionally supports the common scalar, array, and map types
+    needed for checkpoint state inspection without requiring an extra
+    dependency at runtime.
+    """
+
+    idx = 0
+
+    def read(n: int) -> bytes:
+        nonlocal idx
+        chunk = data[idx : idx + n]
+        if len(chunk) != n:
+            raise ValueError("truncated msgpack payload")
+        idx += n
+        return chunk
+
+    def decode() -> Any:
+        nonlocal idx
+        prefix = read(1)[0]
+
+        if prefix <= 0x7F:
+            return prefix
+        if 0x80 <= prefix <= 0x8F:
+            size = prefix & 0x0F
+            return {decode(): decode() for _ in range(size)}
+        if 0x90 <= prefix <= 0x9F:
+            size = prefix & 0x0F
+            return [decode() for _ in range(size)]
+        if 0xA0 <= prefix <= 0xBF:
+            size = prefix & 0x1F
+            return read(size).decode("utf-8", errors="replace")
+        if prefix == 0xC0:
+            return None
+        if prefix == 0xC2:
+            return False
+        if prefix == 0xC3:
+            return True
+        if prefix == 0xC4:
+            size = read(1)[0]
+            return read(size)
+        if prefix == 0xC5:
+            size = struct.unpack(">H", read(2))[0]
+            return read(size)
+        if prefix == 0xC6:
+            size = struct.unpack(">I", read(4))[0]
+            return read(size)
+        if prefix == 0xCA:
+            return struct.unpack(">f", read(4))[0]
+        if prefix == 0xCB:
+            return struct.unpack(">d", read(8))[0]
+        if prefix == 0xCC:
+            return read(1)[0]
+        if prefix == 0xCD:
+            return struct.unpack(">H", read(2))[0]
+        if prefix == 0xCE:
+            return struct.unpack(">I", read(4))[0]
+        if prefix == 0xCF:
+            return struct.unpack(">Q", read(8))[0]
+        if prefix == 0xD0:
+            return struct.unpack(">b", read(1))[0]
+        if prefix == 0xD1:
+            return struct.unpack(">h", read(2))[0]
+        if prefix == 0xD2:
+            return struct.unpack(">i", read(4))[0]
+        if prefix == 0xD3:
+            return struct.unpack(">q", read(8))[0]
+        if prefix == 0xD9:
+            size = read(1)[0]
+            return read(size).decode("utf-8", errors="replace")
+        if prefix == 0xDA:
+            size = struct.unpack(">H", read(2))[0]
+            return read(size).decode("utf-8", errors="replace")
+        if prefix == 0xDB:
+            size = struct.unpack(">I", read(4))[0]
+            return read(size).decode("utf-8", errors="replace")
+        if prefix == 0xDC:
+            size = struct.unpack(">H", read(2))[0]
+            return [decode() for _ in range(size)]
+        if prefix == 0xDD:
+            size = struct.unpack(">I", read(4))[0]
+            return [decode() for _ in range(size)]
+        if prefix == 0xDE:
+            size = struct.unpack(">H", read(2))[0]
+            return {decode(): decode() for _ in range(size)}
+        if prefix == 0xDF:
+            size = struct.unpack(">I", read(4))[0]
+            return {decode(): decode() for _ in range(size)}
+        if 0xE0 <= prefix <= 0xFF:
+            return prefix - 0x100
+        raise ValueError(f"unsupported msgpack prefix: 0x{prefix:02x}")
+
+    result = decode()
+    return result
+
+
+def extract_state_fields(payload: Any, keys: list[str]) -> dict[str, Any]:
+    def _find(value: Any, key: str) -> tuple[bool, Any]:
+        if isinstance(value, dict):
+            if key in value:
+                return True, value.get(key)
+            for child in value.values():
+                found, child_value = _find(child, key)
+                if found:
+                    return True, child_value
+        elif isinstance(value, list):
+            for child in value:
+                found, child_value = _find(child, key)
+                if found:
+                    return True, child_value
+        return False, None
+
+    result: dict[str, Any] = {}
+    for key in keys:
+        found, value = _find(payload, key)
+        result[key] = value if found else None
+    return result
 
 
 def print_section(title: str) -> None:
@@ -141,7 +286,7 @@ def print_checkpoint_rows(
 
     where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
     query = f"""
-        SELECT thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, metadata
+        SELECT thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata
         FROM checkpoints
         {where_clause}
         ORDER BY rowid DESC
@@ -159,8 +304,9 @@ def print_checkpoint_rows(
 
     table_rows: list[list[Any]] = []
     for idx, row in enumerate(rows, start=1):
-        thread, namespace, checkpoint_id, parent_id, row_type, metadata = row
+        thread, namespace, checkpoint_id, parent_id, row_type, checkpoint, metadata = row
         metadata_obj = parse_jsonish(metadata)
+        checkpoint_obj = parse_checkpoint_payload(checkpoint)
         conversation = None
         agent_key = None
         step = None
@@ -168,6 +314,10 @@ def print_checkpoint_rows(
             conversation = metadata_obj.get("conversation_id")
             agent_key = metadata_obj.get("agent_key")
             step = metadata_obj.get("step")
+        checkpoint_fields = extract_state_fields(
+            checkpoint_obj,
+            ["worked_seconds", "timer_started_at", "phase", "current_task"],
+        )
         table_rows.append(
             [
                 idx,
@@ -179,11 +329,29 @@ def print_checkpoint_rows(
                 conversation,
                 agent_key,
                 step,
+                checkpoint_fields["worked_seconds"],
+                checkpoint_fields["timer_started_at"],
+                checkpoint_fields["phase"],
+                checkpoint_fields["current_task"],
             ]
         )
 
     print_table(
-        ["#", "thread_id", "ns", "checkpoint_id", "parent_id", "type", "conversation_id", "agent_key", "step"],
+        [
+            "#",
+            "thread_id",
+            "ns",
+            "checkpoint_id",
+            "parent_id",
+            "type",
+            "conversation_id",
+            "agent_key",
+            "step",
+            "worked_seconds",
+            "timer_started_at",
+            "phase",
+            "current_task",
+        ],
         table_rows,
     )
 
@@ -267,18 +435,19 @@ def print_conversation_rows(
         params.append(conversation_id)
 
     where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    select_columns = [
+        "conversation_id",
+        "agent_key",
+        "last_thread_id",
+        "last_run_id",
+        "last_run_status",
+        "created_at",
+        "updated_at",
+    ]
     cur = conn.cursor()
     cur.execute(
         f"""
-        SELECT
-            conversation_id,
-            agent_key,
-            worked_seconds,
-            last_thread_id,
-            last_run_id,
-            last_run_status,
-            created_at,
-            updated_at
+        SELECT {", ".join(select_columns)}
         FROM conversations
         {where_clause}
         ORDER BY updated_at DESC, conversation_id DESC
@@ -297,7 +466,6 @@ def print_conversation_rows(
         (
             conv_id,
             agent_key,
-            worked_seconds,
             last_thread_id,
             last_run_id,
             last_run_status,
@@ -309,7 +477,6 @@ def print_conversation_rows(
                 idx,
                 decode_value(conv_id),
                 decode_value(agent_key),
-                worked_seconds,
                 decode_value(last_thread_id),
                 decode_value(last_run_id),
                 decode_value(last_run_status),
@@ -323,7 +490,6 @@ def print_conversation_rows(
             "#",
             "conversation_id",
             "agent_key",
-            "worked_seconds",
             "last_thread_id",
             "last_run_id",
             "last_run_status",

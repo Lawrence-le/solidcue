@@ -1,4 +1,4 @@
-from solidcue.core.graph_node.reflection_node import reflection_node
+from solidcue.core.graph_agent.nodes.reflection_node import reflection_node
 
 
 def test_reflection_returns_missing_source_on_empty_source_content() -> None:

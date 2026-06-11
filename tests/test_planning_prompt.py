@@ -1,4 +1,4 @@
-from solidcue.prompts.planning_prompt import build_planning_messages
+from solidcue.core.graph_agent.prompts.planning_prompt import build_planning_messages
 
 
 def test_planning_prompt_includes_output_paths_from_metadata() -> None:

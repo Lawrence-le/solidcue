@@ -24,21 +24,20 @@ from langgraph.types import Command
 
 from solidcue.agents.configs.loader import load_agent
 from solidcue.agents.configs.schema import AgentConfig
-from solidcue.core.router_graph.builder import build_async_router_graph
-from solidcue.core.router_graph.router_node._shared import (
+from solidcue.core.graph_router.builder import build_async_router_graph
+from solidcue.core.graph_router.nodes._shared import (
     clear_runtime_router_provider_config,
     set_runtime_router_provider_config,
 )
-from solidcue.core.graph.builder import build_agent_graph, build_async_agent_graph
-from solidcue.core.graph_node.final_output_node import (
+from solidcue.core.graph_agent.builder import build_agent_graph, build_async_agent_graph
+from solidcue.core.graph_agent.nodes.final_output_node import (
     prepare_final_output_stream,
     resolve_final_output,
 )
-from solidcue.core.state.schema import AgentState
+from solidcue.core.graph_agent.state.schema import AgentState
 from solidcue.core.utils.debug import log_state
 from solidcue.core.utils.metrics import build_metric, build_metric_state_delta
 from solidcue.services.chat_history_service import (
-    add_conversation_worked_seconds,
     append_chat_message,
     get_conversation_metadata,
     update_conversation_run_state,
@@ -183,6 +182,8 @@ def _build_initial_state(
     conversation_id: str,
     user_input: str,
     profile_data: dict[str, Any],
+    worked_seconds: int = 0,
+    timer_started_at: float | None = None,
 ) -> AgentState:
     return {
         "agent_key": agent_key,
@@ -190,6 +191,8 @@ def _build_initial_state(
         "conversation_id": conversation_id,
         "user_input": user_input,
         "config": profile_data,
+        "worked_seconds": _normalize_worked_seconds(worked_seconds),
+        "timer_started_at": timer_started_at,
         "max_retries": 10,
     }
 
@@ -199,12 +202,16 @@ def _build_router_initial_state(
     thread_id: str,
     conversation_id: str,
     user_input: str,
+    worked_seconds: int = 0,
+    timer_started_at: float | None = None,
 ) -> dict[str, Any]:
     return {
         "thread_id": thread_id,
         "conversation_id": conversation_id,
         "user_input": user_input,
         "config": {},
+        "worked_seconds": _normalize_worked_seconds(worked_seconds),
+        "timer_started_at": timer_started_at,
         "max_retries": 10,
     }
 
@@ -237,24 +244,134 @@ def _first_output(result: dict[str, Any]) -> str | None:
     return None
 
 
-def _persist_conversation_worked_seconds(
+def _normalize_worked_seconds(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+
+def _normalize_timer_started_at(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        started_at = float(value)
+        if started_at >= 0:
+            return started_at
+    return None
+
+
+def _graph_state_values(snapshot: Any) -> dict[str, Any]:
+    values = getattr(snapshot, "values", None)
+    return dict(values) if isinstance(values, dict) else {}
+
+
+async def _load_graph_state(graph: Any, run_config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        snapshot = await graph.aget_state(run_config)
+    except Exception:
+        return {}
+    return _graph_state_values(snapshot)
+
+
+def _load_graph_state_sync(graph: Any, run_config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        snapshot = graph.get_state(run_config)
+    except Exception:
+        return {}
+    return _graph_state_values(snapshot)
+
+
+async def _start_checkpoint_timer(
     *,
-    conversation_id: str | None,
-    thread_id: str,
-    agent_key: str,
-    started_at: float,
+    graph: Any,
+    run_config: dict[str, Any],
+    as_node: str,
 ) -> None:
-    resolved_conversation_id = (
-        conversation_id.strip()
-        if isinstance(conversation_id, str) and conversation_id.strip()
-        else thread_id
+    if not callable(getattr(graph, "aupdate_state", None)):
+        return
+    state = await _load_graph_state(graph, run_config)
+    if _normalize_timer_started_at(state.get("timer_started_at")) is not None:
+        return
+    await graph.aupdate_state(
+        run_config,
+        {
+            "worked_seconds": _normalize_worked_seconds(state.get("worked_seconds")),
+            "timer_started_at": time.time(),
+        },
+        as_node=as_node,
     )
-    elapsed_seconds = max(0, math.ceil(time.perf_counter() - started_at))
-    add_conversation_worked_seconds(
-        conversation_id=resolved_conversation_id,
-        worked_seconds=elapsed_seconds,
-        agent_key=agent_key,
+
+
+def _start_checkpoint_timer_sync(
+    *,
+    graph: Any,
+    run_config: dict[str, Any],
+    as_node: str,
+) -> None:
+    if not callable(getattr(graph, "update_state", None)):
+        return
+    state = _load_graph_state_sync(graph, run_config)
+    if _normalize_timer_started_at(state.get("timer_started_at")) is not None:
+        return
+    graph.update_state(
+        run_config,
+        {
+            "worked_seconds": _normalize_worked_seconds(state.get("worked_seconds")),
+            "timer_started_at": time.time(),
+        },
+        as_node=as_node,
     )
+
+
+async def _finalize_checkpoint_timer(
+    *,
+    graph: Any,
+    run_config: dict[str, Any],
+    as_node: str,
+) -> int:
+    if not callable(getattr(graph, "aupdate_state", None)):
+        state = await _load_graph_state(graph, run_config)
+        worked_seconds = _normalize_worked_seconds(state.get("worked_seconds"))
+        started_at = _normalize_timer_started_at(state.get("timer_started_at"))
+        if started_at is not None:
+            worked_seconds += max(0, math.ceil(time.time() - started_at))
+        return worked_seconds
+    state = await _load_graph_state(graph, run_config)
+    worked_seconds = _normalize_worked_seconds(state.get("worked_seconds"))
+    started_at = _normalize_timer_started_at(state.get("timer_started_at"))
+    if started_at is not None:
+        worked_seconds += max(0, math.ceil(time.time() - started_at))
+    await graph.aupdate_state(
+        run_config,
+        {"worked_seconds": worked_seconds, "timer_started_at": None},
+        as_node=as_node,
+    )
+    return worked_seconds
+
+
+def _finalize_checkpoint_timer_sync(
+    *,
+    graph: Any,
+    run_config: dict[str, Any],
+    as_node: str,
+) -> int:
+    if not callable(getattr(graph, "update_state", None)):
+        state = _load_graph_state_sync(graph, run_config)
+        worked_seconds = _normalize_worked_seconds(state.get("worked_seconds"))
+        started_at = _normalize_timer_started_at(state.get("timer_started_at"))
+        if started_at is not None:
+            worked_seconds += max(0, math.ceil(time.time() - started_at))
+        return worked_seconds
+    state = _load_graph_state_sync(graph, run_config)
+    worked_seconds = _normalize_worked_seconds(state.get("worked_seconds"))
+    started_at = _normalize_timer_started_at(state.get("timer_started_at"))
+    if started_at is not None:
+        worked_seconds += max(0, math.ceil(time.time() - started_at))
+    graph.update_state(
+        run_config,
+        {"worked_seconds": worked_seconds, "timer_started_at": None},
+        as_node=as_node,
+    )
+    return worked_seconds
 
 
 def _persist_conversation_run_state(
@@ -373,7 +490,6 @@ async def _execute_run(
     graph: Any,
     payload: Any,
     run_config: dict[str, Any],
-    started_at: float,
 ) -> None:
     """Drive the graph to completion and write events to the run queue.
 
@@ -429,11 +545,10 @@ async def _execute_run(
                             agent_key=agent_key,
                             status="interrupted",
                         )
-                        _persist_conversation_worked_seconds(
-                            conversation_id=run_config.get("metadata", {}).get("conversation_id"),
-                            thread_id=thread_id,
-                            agent_key=agent_key,
-                            started_at=started_at,
+                        await _finalize_checkpoint_timer(
+                            graph=graph,
+                            run_config=run_config,
+                            as_node="final_output",
                         )
                         await emit(
                             {
@@ -572,17 +687,22 @@ async def _execute_run(
                     content=output,
                     agent_key=agent_key,
                 )
+                worked_seconds = _normalize_worked_seconds(state.get("worked_seconds"))
+                started_at = _normalize_timer_started_at(state.get("timer_started_at"))
+                if started_at is not None:
+                    worked_seconds += max(0, math.ceil(time.time() - started_at))
                 await graph.aupdate_state(
                     run_config,
                     {
                         "final_response": output,
+                        "worked_seconds": worked_seconds,
+                        "timer_started_at": None,
                         **build_metric_state_delta(
                             "final_output", "metric_final_output", metric_final_output
                         ),
                     },
                     as_node="final_output",
                 )
-
                 _set_run_status(
                     thread_id=thread_id,
                     status="completed",
@@ -597,14 +717,6 @@ async def _execute_run(
                     run_id=run_id,
                     agent_key=agent_key,
                     status="completed",
-                )
-                _persist_conversation_worked_seconds(
-                    conversation_id=conversation_id
-                    if isinstance(conversation_id, str)
-                    else None,
-                    thread_id=thread_id,
-                    agent_key=agent_key,
-                    started_at=started_at,
                 )
                 await emit(
                     {
@@ -628,18 +740,17 @@ async def _execute_run(
             run_id=run_id,
             agent_key=agent_key,
         )
+        await _finalize_checkpoint_timer(
+            graph=graph,
+            run_config=run_config,
+            as_node="final_output",
+        )
         _persist_conversation_run_state(
             conversation_id=run_config.get("metadata", {}).get("conversation_id"),
             thread_id=thread_id,
             run_id=run_id,
             agent_key=agent_key,
             status="cancelled",
-        )
-        _persist_conversation_worked_seconds(
-            conversation_id=run_config.get("metadata", {}).get("conversation_id"),
-            thread_id=thread_id,
-            agent_key=agent_key,
-            started_at=started_at,
         )
         await q.put({"event": "cancelled", "data": {"thread_id": thread_id, "run_id": run_id}})
     except Exception as error:
@@ -650,18 +761,17 @@ async def _execute_run(
             agent_key=agent_key,
             error=str(error),
         )
+        await _finalize_checkpoint_timer(
+            graph=graph,
+            run_config=run_config,
+            as_node="final_output",
+        )
         _persist_conversation_run_state(
             conversation_id=run_config.get("metadata", {}).get("conversation_id"),
             thread_id=thread_id,
             run_id=run_id,
             agent_key=agent_key,
             status="error",
-        )
-        _persist_conversation_worked_seconds(
-            conversation_id=run_config.get("metadata", {}).get("conversation_id"),
-            thread_id=thread_id,
-            agent_key=agent_key,
-            started_at=started_at,
         )
         await q.put({"event": "error", "data": {"message": str(error)}})
     finally:
@@ -725,9 +835,18 @@ async def start_run(
             conversation_id=resolved_conversation_id,
             user_input=user_input,
             profile_data=profile_data,
+            worked_seconds=0,
+            timer_started_at=time.time(),
         )
     else:
         payload = None  # continue from checkpoint
+
+    if resume_value is not None or payload is None:
+        await _start_checkpoint_timer(
+            graph=graph,
+            run_config=run_config,
+            as_node="initialize",
+        )
 
     q: asyncio.Queue = asyncio.Queue()
     _RUN_QUEUES[run_id] = q
@@ -746,7 +865,6 @@ async def start_run(
             graph=graph,
             payload=payload,
             run_config=run_config,
-            started_at=time.perf_counter(),
         )
     )
     _RUN_TASKS[run_id] = task
@@ -796,44 +914,48 @@ def run_agent_step(
         conversation_id=resolved_conversation_id,
         agent_key=agent.agent_key,
     )
-    started_at = time.perf_counter()
 
     if resume_value is not None:
         _append_resume_chat_history(graph=graph, run_config=run_config, resume_value=resume_value)
         try:
+            _start_checkpoint_timer_sync(graph=graph, run_config=run_config, as_node="initialize")
             with start_langfuse_root_span(
                 name="solidcue.langgraph.run_agent_step.resume",
                 input_payload={"thread_id": thread_id, "agent_key": agent.agent_key},
             ):
                 with propagate_langfuse_session(session_id=thread_id):
-                    result = trace_langgraph_invoke(
-                        span_name="solidcue.langgraph.run_agent_step.resume",
-                        attributes={
-                            "solidcue.agent_key": agent.agent_key,
-                            "solidcue.thread_id": thread_id,
-                            "solidcue.debug": debug,
-                        },
-                        invoke=lambda: _invoke_graph(
-                            graph=graph,
-                            input_payload=Command(resume=resume_value),
-                            run_config=run_config,
-                            debug=debug,
-                        ),
-                    )
-                    output = _first_output(result) if isinstance(result, dict) else None
-                    if isinstance(output, str) and output.strip():
-                        append_chat_message(
-                            conversation_id=resolved_conversation_id,
-                            role="assistant",
-                            content=output,
-                            agent_key=agent.agent_key,
+                    try:
+                        result = trace_langgraph_invoke(
+                            span_name="solidcue.langgraph.run_agent_step.resume",
+                            attributes={
+                                "solidcue.agent_key": agent.agent_key,
+                                "solidcue.thread_id": thread_id,
+                                "solidcue.debug": debug,
+                            },
+                            invoke=lambda: _invoke_graph(
+                                graph=graph,
+                                input_payload=Command(resume=resume_value),
+                                run_config=run_config,
+                                debug=debug,
+                            ),
                         )
-                    _persist_conversation_worked_seconds(
-                        conversation_id=resolved_conversation_id,
-                        thread_id=thread_id,
-                        agent_key=agent.agent_key,
-                        started_at=started_at,
-                    )
+                        output = _first_output(result) if isinstance(result, dict) else None
+                        if isinstance(output, str) and output.strip():
+                            append_chat_message(
+                                conversation_id=resolved_conversation_id,
+                                role="assistant",
+                                content=output,
+                                agent_key=agent.agent_key,
+                            )
+                    finally:
+                        try:
+                            _finalize_checkpoint_timer_sync(
+                                graph=graph,
+                                run_config=run_config,
+                                as_node="final_output",
+                            )
+                        except Exception:
+                            pass
                     return (
                         agent,
                         result,
@@ -857,6 +979,8 @@ def run_agent_step(
         conversation_id=resolved_conversation_id,
         user_input=user_input,
         profile_data=profile_data,
+        worked_seconds=0,
+        timer_started_at=time.time(),
     )
     try:
         with start_langfuse_root_span(
@@ -864,34 +988,38 @@ def run_agent_step(
             input_payload={"thread_id": thread_id, "agent_key": agent.agent_key},
         ):
             with propagate_langfuse_session(session_id=thread_id):
-                result = trace_langgraph_invoke(
-                    span_name="solidcue.langgraph.run_agent_step.initial",
-                    attributes={
-                        "solidcue.agent_key": agent.agent_key,
-                        "solidcue.thread_id": thread_id,
-                        "solidcue.debug": debug,
-                    },
-                    invoke=lambda: _invoke_graph(
-                        graph=graph,
-                        input_payload=state,
-                        run_config=run_config,
-                        debug=debug,
-                    ),
-                )
-                output = _first_output(result) if isinstance(result, dict) else None
-                if isinstance(output, str) and output.strip():
-                    append_chat_message(
-                        conversation_id=resolved_conversation_id,
-                        role="assistant",
-                        content=output,
-                        agent_key=agent.agent_key,
+                try:
+                    result = trace_langgraph_invoke(
+                        span_name="solidcue.langgraph.run_agent_step.initial",
+                        attributes={
+                            "solidcue.agent_key": agent.agent_key,
+                            "solidcue.thread_id": thread_id,
+                            "solidcue.debug": debug,
+                        },
+                        invoke=lambda: _invoke_graph(
+                            graph=graph,
+                            input_payload=state,
+                            run_config=run_config,
+                            debug=debug,
+                        ),
                     )
-                _persist_conversation_worked_seconds(
-                    conversation_id=resolved_conversation_id,
-                    thread_id=thread_id,
-                    agent_key=agent.agent_key,
-                    started_at=started_at,
-                )
+                    output = _first_output(result) if isinstance(result, dict) else None
+                    if isinstance(output, str) and output.strip():
+                        append_chat_message(
+                            conversation_id=resolved_conversation_id,
+                            role="assistant",
+                            content=output,
+                            agent_key=agent.agent_key,
+                        )
+                finally:
+                    try:
+                        _finalize_checkpoint_timer_sync(
+                            graph=graph,
+                            run_config=run_config,
+                            as_node="final_output",
+                        )
+                    except Exception:
+                        pass
                 return (
                     agent,
                     result,
@@ -929,47 +1057,52 @@ def run_agent(
         conversation_id=resolved_conversation_id,
         user_input=user_input,
         profile_data=profile_data,
+        worked_seconds=0,
+        timer_started_at=time.time(),
     )
     graph = build_agent_graph()
     run_config["configurable"] = {"thread_id": thread_id}
-    started_at = time.perf_counter()
     try:
         with start_langfuse_root_span(
             name="solidcue.langgraph.run_agent",
             input_payload={"thread_id": thread_id, "agent_key": agent.agent_key},
         ):
             with propagate_langfuse_session(session_id=thread_id):
-                result = cast(
-                    AgentState,
-                    trace_langgraph_invoke(
-                        span_name="solidcue.langgraph.run_agent",
-                        attributes={
-                            "solidcue.agent_key": agent.agent_key,
-                            "solidcue.thread_id": thread_id,
-                            "solidcue.debug": debug,
-                        },
-                        invoke=lambda: _invoke_graph(
-                            graph=graph,
-                            input_payload=state,
-                            run_config=run_config,
-                            debug=debug,
+                try:
+                    result = cast(
+                        AgentState,
+                        trace_langgraph_invoke(
+                            span_name="solidcue.langgraph.run_agent",
+                            attributes={
+                                "solidcue.agent_key": agent.agent_key,
+                                "solidcue.thread_id": thread_id,
+                                "solidcue.debug": debug,
+                            },
+                            invoke=lambda: _invoke_graph(
+                                graph=graph,
+                                input_payload=state,
+                                run_config=run_config,
+                                debug=debug,
+                            ),
                         ),
-                    ),
-                )
-                output = _first_output(result)
-                if isinstance(output, str) and output.strip():
-                    append_chat_message(
-                        conversation_id=resolved_conversation_id,
-                        role="assistant",
-                        content=output,
-                        agent_key=agent.agent_key,
                     )
-                _persist_conversation_worked_seconds(
-                    conversation_id=resolved_conversation_id,
-                    thread_id=thread_id,
-                    agent_key=agent.agent_key,
-                    started_at=started_at,
-                )
+                    output = _first_output(result)
+                    if isinstance(output, str) and output.strip():
+                        append_chat_message(
+                            conversation_id=resolved_conversation_id,
+                            role="assistant",
+                            content=output,
+                            agent_key=agent.agent_key,
+                        )
+                finally:
+                    try:
+                        _finalize_checkpoint_timer_sync(
+                            graph=graph,
+                            run_config=run_config,
+                            as_node="final_output",
+                        )
+                    except Exception:
+                        pass
     finally:
         flush_langfuse()
     return agent, result
@@ -1066,6 +1199,7 @@ async def stream_router_chat_events(
             "agent_key": "router",
         },
     }
+    router_timer_finalized = False
 
     with start_langfuse_root_span(
         name="solidcue.langgraph.router_run",
@@ -1087,6 +1221,8 @@ async def stream_router_chat_events(
                         thread_id=router_thread_id,
                         conversation_id=resolved_conversation_id,
                         user_input=user_input,
+                        worked_seconds=0,
+                        timer_started_at=time.time(),
                     ),
                     config=run_config,
                     stream_mode="updates",
@@ -1115,6 +1251,41 @@ async def stream_router_chat_events(
 
                 if isinstance(target_agent_key, str) and target_agent_key.strip() and handoff_action == "route_agent":
                     agent_thread_id = create_thread_id()
+                    if output:
+                        await _finalize_checkpoint_timer(
+                            graph=graph,
+                            run_config=run_config,
+                            as_node="final_output",
+                        )
+                        router_timer_finalized = True
+                        append_chat_message(
+                            conversation_id=resolved_conversation_id,
+                            role="assistant",
+                            content=output,
+                            agent_key="router",
+                        )
+                        yield {
+                            "event": "message_start",
+                            "data": {
+                                "thread_id": router_thread_id,
+                                "conversation_id": resolved_conversation_id,
+                                "phase": state.get("router_intent"),
+                            },
+                        }
+                        yield {
+                            "event": "message_delta",
+                            "data": {
+                                "thread_id": router_thread_id,
+                                "delta": output,
+                            },
+                        }
+                    if not router_timer_finalized:
+                        await _finalize_checkpoint_timer(
+                            graph=graph,
+                            run_config=run_config,
+                            as_node="handoff",
+                        )
+                        router_timer_finalized = True
                     upsert_conversation(
                         conversation_id=resolved_conversation_id,
                         agent_key=target_agent_key,
@@ -1144,6 +1315,12 @@ async def stream_router_chat_events(
                     output = "I can help create a new agent. Tell me the agent name, description, and tools."
 
                 if output:
+                    await _finalize_checkpoint_timer(
+                        graph=graph,
+                        run_config=run_config,
+                        as_node="final_output",
+                    )
+                    router_timer_finalized = True
                     append_chat_message(
                         conversation_id=resolved_conversation_id,
                         role="assistant",
@@ -1166,6 +1343,13 @@ async def stream_router_chat_events(
                         },
                     }
 
+                if not router_timer_finalized:
+                    await _finalize_checkpoint_timer(
+                        graph=graph,
+                        run_config=run_config,
+                        as_node="final_output",
+                    )
+                    router_timer_finalized = True
                 yield {
                     "event": "completed",
                     "data": {
@@ -1176,4 +1360,13 @@ async def stream_router_chat_events(
                     },
                 }
             finally:
+                if not router_timer_finalized:
+                    try:
+                        await _finalize_checkpoint_timer(
+                            graph=graph,
+                            run_config=run_config,
+                            as_node="final_output",
+                        )
+                    except Exception:
+                        pass
                 clear_runtime_router_provider_config(router_thread_id)

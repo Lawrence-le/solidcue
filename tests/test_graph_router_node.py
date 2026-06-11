@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from solidcue.core.graph_node.router_node import router_node
+from solidcue.core.graph_agent.nodes.router_node import router_node
 
 
 def test_router_routes_missing_source_to_decision() -> None:
@@ -287,7 +287,7 @@ def test_router_keeps_source_gathering_when_llm_says_incomplete() -> None:
     }
 
     # LLM says task is not yet complete
-    with patch("solidcue.core.graph_node.router_node._llm_task_complete", return_value=(False, [], ["profile_data", "experience_data"], "Read the listed files using drive_read_file.")):
+    with patch("solidcue.core.graph_agent.nodes.router_node._llm_task_complete", return_value=(False, [], ["profile_data", "experience_data"], "Read the listed files using drive_read_file.")):
         result = router_node(state)
 
     assert result["phase"] == "source"
@@ -320,7 +320,7 @@ def test_router_advances_to_next_task_when_llm_says_complete() -> None:
         "agent_key": "resume_builder",
     }
 
-    with patch("solidcue.core.graph_node.router_node._llm_task_complete", return_value=(True, ["profile_data"], [], "")):
+    with patch("solidcue.core.graph_agent.nodes.router_node._llm_task_complete", return_value=(True, ["profile_data"], [], "")):
         result = router_node(state)
 
     assert result["current_task"] == "task_2"
@@ -370,7 +370,7 @@ def test_router_artifact_completion_uses_task_scoped_tool_history() -> None:
     }
 
     with patch(
-        "solidcue.core.graph_node.router_node._llm_artifact_task_complete",
+        "solidcue.core.graph_agent.nodes.router_node._llm_artifact_task_complete",
         return_value=(True, ["formatted document", "upload confirmation"], [], ""),
     ):
         result = router_node(state)
@@ -403,7 +403,7 @@ def test_router_skips_llm_check_when_task_already_completed() -> None:
         ],
     }
 
-    with patch("solidcue.core.graph_node.router_node._llm_task_complete") as mock_llm:
+    with patch("solidcue.core.graph_agent.nodes.router_node._llm_task_complete") as mock_llm:
         result = router_node(state)
         mock_llm.assert_not_called()
 

@@ -137,14 +137,20 @@ def latest_thread_for_conversation(conversation_id: str) -> ConversationSummary:
     "/conversations/{conversation_id}/metadata",
     response_model=ConversationMetadataResponse,
 )
-def conversation_metadata(conversation_id: str) -> ConversationMetadataResponse:
+async def conversation_metadata(conversation_id: str) -> ConversationMetadataResponse:
     payload = load_conversation_metadata(conversation_id)
+    live_state = await load_live_state_for_conversation(conversation_id)
+    worked_seconds = live_state.get("worked_seconds")
     return ConversationMetadataResponse(
         conversation_id=payload.get("conversation_id", conversation_id),
         agent_key=payload.get("agent_key")
         if isinstance(payload.get("agent_key"), str)
         else None,
-        worked_seconds=int(payload.get("worked_seconds") or 0),
+        worked_seconds=(
+            int(worked_seconds)
+            if isinstance(worked_seconds, (int, float))
+            else 0
+        ),
         last_thread_id=payload.get("last_thread_id")
         if isinstance(payload.get("last_thread_id"), str)
         else None,

@@ -265,17 +265,6 @@ function NodeRail({ events }: { events: NodeEvent[] }) {
   );
 }
 
-function formatRunningLabel(events: NodeEvent[]): string {
-  const activeEvent = [...events].reverse().find((event) => event.status === "running");
-  if (!activeEvent) return "Running task...";
-
-  if (activeEvent.phase) {
-    return `${activeEvent.node}: ${activeEvent.phase}`;
-  }
-
-  return activeEvent.node;
-}
-
 function StepHistory({ events }: { events: NodeEvent[] }) {
   if (events.length === 0) return null;
 
@@ -418,6 +407,7 @@ export function SessionsPage() {
   const [loadingSession, setLoadingSession] = useState(false);
   const [workedSeconds, setWorkedSeconds] = useState<number | null>(null);
   const [liveWorkedSeconds, setLiveWorkedSeconds] = useState(0);
+  const [timerVersion, setTimerVersion] = useState(0);
   const [providerSettingsOpen, setProviderSettingsOpen] = useState(false);
   const [routerRole, setRouterRole] = useState<RouterSettingsForm>(() =>
     routerSettingsFromProfile(null),
@@ -485,29 +475,37 @@ export function SessionsPage() {
 
   const loadConversationMetadata = useCallback(
     async (targetConversationId: string) => {
-      const metadata = await api.conversationMetadata(targetConversationId);
-      setWorkedSeconds(metadata.worked_seconds);
-      return metadata;
+      const stateRes = await api.conversationLiveState(targetConversationId, [
+        "worked_seconds",
+        "timer_started_at",
+      ]);
+      const worked = Number(stateRes.state.worked_seconds ?? 0);
+      setWorkedSeconds(Number.isFinite(worked) ? worked : 0);
+      const timerStartedAt = stateRes.state.timer_started_at;
+      runStartedAtRef.current =
+        typeof timerStartedAt === "number" ? timerStartedAt * 1000 : null;
+      return stateRes;
     },
     [],
   );
 
   const loadConversationSnapshot = useCallback(
     async (targetConversationId: string) => {
-      const [stateRes, runRes, metadataRes] = await Promise.all([
+      const [stateRes, runRes] = await Promise.all([
         api.conversationLiveState(targetConversationId, [
           "chat_history",
           "user_input",
           "final_response",
           "agent_key",
+          "worked_seconds",
+          "timer_started_at",
         ]),
         api.conversationRunStatus(targetConversationId),
-        api.conversationMetadata(targetConversationId),
       ]);
       const effectiveStatus =
         runRes.status !== "idle"
           ? runRes.status
-          : metadataRes.last_run_status ?? "idle";
+          : "idle";
 
       const state = stateRes.state;
       const msgs: ChatMessage[] = [];
@@ -591,11 +589,12 @@ export function SessionsPage() {
         setAgentKey(state.agent_key);
       if (stateRes.thread_id && typeof stateRes.thread_id === "string")
         setThreadId(stateRes.thread_id);
-      else if (metadataRes.last_thread_id)
-        setThreadId(metadataRes.last_thread_id);
       if (runRes.run_id) setRunId(runRes.run_id);
-      else if (metadataRes.last_run_id) setRunId(metadataRes.last_run_id);
-      setWorkedSeconds(metadataRes.worked_seconds);
+      const worked = Number(state.worked_seconds ?? 0);
+      setWorkedSeconds(Number.isFinite(worked) ? worked : 0);
+      const timerStartedAt = state.timer_started_at;
+      runStartedAtRef.current =
+        typeof timerStartedAt === "number" ? timerStartedAt * 1000 : null;
       setMessages(msgs);
       setRunState(mapRemoteRunStatus(effectiveStatus));
     },
@@ -605,6 +604,7 @@ export function SessionsPage() {
   const beginWorkedTimer = useCallback(() => {
     runStartedAtRef.current = Date.now();
     setLiveWorkedSeconds(0);
+    setTimerVersion((current) => current + 1);
   }, []);
 
   const finalizeWorkedTimer = useCallback(() => {
@@ -656,6 +656,7 @@ export function SessionsPage() {
         setLoadingSession(false);
         setWorkedSeconds(null);
         setLiveWorkedSeconds(0);
+        setTimerVersion(0);
         runStartedAtRef.current = null;
       }
       return;
@@ -681,6 +682,7 @@ export function SessionsPage() {
     setLoadingSession(true);
     setWorkedSeconds(null);
     setLiveWorkedSeconds(0);
+    setTimerVersion(0);
     runStartedAtRef.current = null;
 
     loadConversationSnapshot(conversationParam)
@@ -740,7 +742,7 @@ export function SessionsPage() {
     syncElapsedSeconds();
     const interval = window.setInterval(syncElapsedSeconds, 1000);
     return () => window.clearInterval(interval);
-  }, [runState]);
+  }, [runState, timerVersion]);
 
   useEffect(() => {
     nodeRailEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -811,8 +813,16 @@ export function SessionsPage() {
       if (e.event === "start") {
         const tid = e.data.thread_id;
         setThreadId(tid);
-        setRunId(e.data.run_id);
+        if (e.data.run_id) {
+          setRunId(e.data.run_id);
+        }
+        if (e.data.agent_key) {
+          setAgentKey(e.data.agent_key);
+        }
         pendingConversationIdRef.current = null;
+        if (e.data.agent_key && e.data.agent_key !== "router") {
+          beginWorkedTimer();
+        }
       } else if (e.event === "message_start") {
         ensureStreamingAssistantMessage();
       } else if (e.event === "message_delta") {
@@ -848,6 +858,9 @@ export function SessionsPage() {
       } else if (e.event === "handoff") {
         setAgentKey(e.data.target_agent_key);
         setThreadId(e.data.agent_thread_id);
+        setWorkedSeconds(0);
+        setLiveWorkedSeconds(0);
+        runStartedAtRef.current = null;
       } else if (e.event === "interrupt") {
         markNodeDone(nodeEvents[nodeEvents.length - 1]?.node ?? "");
         setRunState("interrupted");
@@ -893,7 +906,14 @@ export function SessionsPage() {
         }
       }
     },
-    [conversationId, finalizeWorkedTimer, loadConversationMetadata, nodeEvents, qc],
+    [
+      beginWorkedTimer,
+      conversationId,
+      finalizeWorkedTimer,
+      loadConversationMetadata,
+      nodeEvents,
+      qc,
+    ],
   );
 
   async function handleContinue() {
@@ -901,7 +921,6 @@ export function SessionsPage() {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    beginWorkedTimer();
     setRunState("streaming");
     setNodeEvents([]);
     try {
@@ -942,7 +961,6 @@ export function SessionsPage() {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    beginWorkedTimer();
     setRunState("streaming");
     setNodeEvents([]);
 
@@ -1041,7 +1059,6 @@ export function SessionsPage() {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    beginWorkedTimer();
     setRunState("streaming");
     setResumable(false);
     setNodeEvents([]);
@@ -1074,11 +1091,11 @@ export function SessionsPage() {
   }
 
   const streaming = runState === "streaming";
-  const runningLabel = formatRunningLabel(nodeEvents);
   const displayedWorkedSeconds =
     streaming
       ? (workedSeconds ?? 0) + liveWorkedSeconds
       : workedSeconds;
+  const showWorkedTimer = agentKey !== "router" && displayedWorkedSeconds !== null;
   const providerMeta = PROVIDER_META[routerRole.provider_type];
   const currentModelLabel = modelLabelForValue(routerRole.model);
   const canSend =
@@ -1188,7 +1205,7 @@ export function SessionsPage() {
                   <StepHistory events={nodeEvents} />
                 )}
 
-                {displayedWorkedSeconds !== null && (
+                {showWorkedTimer && (
                   <div className="px-1">
                     <div className="mb-2 h-px w-full bg-border/60" />
                     <p className="text-[11px] text-muted-foreground/70">

@@ -4,9 +4,9 @@ from typing import Any
 
 from pytest import MonkeyPatch
 
-from solidcue.core.graph_node import execution_node as execution_node_module
-from solidcue.core.graph_node.execution_node import _decode_file_content, execution_node
-from solidcue.core.state.schema import AgentState
+import importlib as _il; execution_node_module = _il.import_module("solidcue.core.graph_agent.nodes.execution_node")
+from solidcue.core.graph_agent.nodes.execution_node import _decode_file_content, execution_node
+from solidcue.core.graph_agent.state.schema import AgentState
 from solidcue.tools.schema import MCPServerConfig, MCPToolConfig, ToolConfig
 
 

@@ -1,6 +1,6 @@
 """Tests for task planning node (Phase 3)."""
 
-from solidcue.core.graph_node.planning_node import (
+from solidcue.core.graph_agent.nodes.planning_node import (
     _guardrail_normalize_task_shape,
     planning_node,
 )

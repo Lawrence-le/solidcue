@@ -1,5 +1,5 @@
-from solidcue.core.graph_node.discovery_node import discovery_node
-from solidcue.core.graph_node import discovery_node as discovery_module
+from solidcue.core.graph_agent.nodes.discovery_node import discovery_node
+import importlib as _il; discovery_module = _il.import_module("solidcue.core.graph_agent.nodes.discovery_node")
 
 
 def test_discovery_node_extracts_paths_from_llm(monkeypatch) -> None:

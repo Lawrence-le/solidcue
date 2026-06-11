@@ -2,9 +2,9 @@
 
 from unittest.mock import patch
 
-from solidcue.core.graph_node.planning_node import planning_node
-from solidcue.core.graph_node.router_node import router_node
-from solidcue.prompts.decision_prompt import build_decision_messages
+from solidcue.core.graph_agent.nodes.planning_node import planning_node
+from solidcue.core.graph_agent.nodes.router_node import router_node
+from solidcue.core.graph_agent.prompts.decision_prompt import build_decision_messages
 from solidcue.agents.configs.loader import load_agent
 
 
@@ -96,7 +96,7 @@ def test_router_advances_task_plan_on_success() -> None:
         "user_input": "Create a resume",
     }
 
-    with patch("solidcue.core.graph_node.router_node._llm_task_complete", return_value=(True, ["profile_data"], [], "")):
+    with patch("solidcue.core.graph_agent.nodes.router_node._llm_task_complete", return_value=(True, ["profile_data"], [], "")):
         result = router_node(state)
 
     assert result["current_task"] == "task_2"

@@ -1,4 +1,4 @@
-from solidcue.prompts.validation_hhem_prompt import build_hhem_verify_messages
+from solidcue.core.graph_agent.prompts.validation_hhem_prompt import build_hhem_verify_messages
 
 
 def test_hhem_verify_prompt_defines_false_positives_and_real_failures() -> None:

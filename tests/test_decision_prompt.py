@@ -1,5 +1,5 @@
-from solidcue.prompts.decision_prompt import build_decision_messages
-from solidcue.prompts import decision_prompt as decision_prompt_module
+from solidcue.core.graph_agent.prompts.decision_prompt import build_decision_messages
+import importlib as _il; decision_prompt_module = _il.import_module("solidcue.core.graph_agent.prompts.decision_prompt")
 class DummyAgent:
     agent_key = "generic_assistant"
     name = "Generic Assistant"
