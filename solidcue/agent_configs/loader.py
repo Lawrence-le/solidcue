@@ -2,9 +2,11 @@ from pathlib import Path
 
 import yaml
 
-from solidcue.agents.configs.schema import AgentConfig
+from solidcue.agent_configs.schema import AgentConfig
 
-AGENTS_ROOT_DIR = Path(__file__).parent.parent
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+AGENTS_ROOT_DIR = PACKAGE_ROOT / "agents"
+SKILLS_ROOT_DIR = PACKAGE_ROOT / "skills"
 LEGACY_AGENT_CONFIG_DIR = AGENTS_ROOT_DIR / "configs"
 DEFAULT_PERSONA_TEMPLATE = """# Persona
 
@@ -25,6 +27,37 @@ Describe this agent's role and responsibilities.
 - Preferred sources or tools:
 - Domain constraints:
 """
+DEFAULT_TOOLS_TEMPLATE = """# Tools
+
+Use this file to describe which tools this agent should use and how to choose between them.
+
+## Tool Routing
+- Use search/list tools when the exact file or resource path is unknown.
+- Use read tools before making edits or generating outputs.
+- Use write/edit tools only on approved source files.
+- Use export/generation tools only after content edits are complete.
+
+## Failure Handling
+1. Read the tool error.
+2. Try the safest fallback if one is available.
+3. Ask the user before taking risky or destructive actions.
+
+## Tool Notes
+- Tool:
+  - Use when:
+  - Avoid when:
+- Expected input:
+  - Expected output:
+"""
+
+
+def _load_text_asset(path: Path, fallback: str) -> str:
+    if not path.exists():
+        return fallback
+    content = path.read_text(encoding="utf-8").strip()
+    return content or fallback
+
+
 DEFAULT_SKILL_TEMPLATE = """# Skill
 
 Use this file to describe the agent's workflow rules, source-of-truth files, and task-specific behavior.
@@ -54,28 +87,6 @@ Use this file to describe the agent's workflow rules, source-of-truth files, and
 - Confirm source files were found and used.
 - Confirm generated or edited outputs are in the expected location.
 - Confirm the final answer is concise and accurate.
-"""
-DEFAULT_TOOLS_TEMPLATE = """# Tools
-
-Use this file to describe which tools this agent should use and how to choose between them.
-
-## Tool Routing
-- Use search/list tools when the exact file or resource path is unknown.
-- Use read tools before making edits or generating outputs.
-- Use write/edit tools only on approved source files.
-- Use export/generation tools only after content edits are complete.
-
-## Failure Handling
-1. Read the tool error.
-2. Try the safest fallback if one is available.
-3. Ask the user before taking risky or destructive actions.
-
-## Tool Notes
-- Tool:
-  - Use when:
-  - Avoid when:
-  - Expected input:
-  - Expected output:
 """
 
 
@@ -231,3 +242,11 @@ def list_agents() -> list[AgentConfig]:
         agents.append(AgentConfig(**data))
 
     return agents
+
+
+def get_create_agent_skill_path() -> Path:
+    return SKILLS_ROOT_DIR / "create-agent.md"
+
+
+def load_create_agent_skill() -> str:
+    return _load_text_asset(get_create_agent_skill_path(), "")

@@ -2,7 +2,7 @@ import json
 from typing import Any
 
 from solidcue.core.graph_agent.prompts.decision_system_prompt import build_decision_system_prompt
-from solidcue.agents.configs.loader import load_agent_skill, load_agent_tools
+from solidcue.agent_configs.loader import load_agent_skill, load_agent_tools
 from solidcue.tools.loader import load_tool
 
 """

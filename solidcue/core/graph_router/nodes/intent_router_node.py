@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from langchain_core.runnables import RunnableConfig
 
-from solidcue.agents.configs.loader import list_agents
+from solidcue.agent_configs.loader import list_agents
 from solidcue.core.graph_router.nodes._shared import (
     extract_json_object,
     get_runtime_router_provider,

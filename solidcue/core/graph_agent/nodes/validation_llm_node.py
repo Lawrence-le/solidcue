@@ -4,8 +4,8 @@ import json
 import re
 from typing import Any
 
-from solidcue.agents.configs.loader import load_agent
-from solidcue.core.execution.provider_resolver import get_provider_for_role
+from solidcue.agent_configs.loader import load_agent
+from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 from solidcue.core.graph_agent.prompts.validation_llm_prompt import build_validation_messages

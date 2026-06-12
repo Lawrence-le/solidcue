@@ -1,0 +1,46 @@
+"""Agent config repository and schema helpers."""
+
+from solidcue.agent_configs.loader import (
+    AGENTS_ROOT_DIR,
+    DEFAULT_PERSONA_TEMPLATE,
+    DEFAULT_SKILL_TEMPLATE,
+    DEFAULT_TOOLS_TEMPLATE,
+    SKILLS_ROOT_DIR,
+    get_agent_path,
+    get_persona_path,
+    get_skill_path,
+    get_tools_path,
+    list_agents,
+    load_agent,
+    load_agent_persona,
+    load_agent_skill,
+    load_agent_tools,
+    save_agent,
+    save_agent_persona,
+    save_agent_skill,
+    save_agent_tools,
+)
+from solidcue.agent_configs.schema import AgentConfig, ProviderConfig
+
+__all__ = [
+    "AGENTS_ROOT_DIR",
+    "DEFAULT_PERSONA_TEMPLATE",
+    "DEFAULT_SKILL_TEMPLATE",
+    "DEFAULT_TOOLS_TEMPLATE",
+    "SKILLS_ROOT_DIR",
+    "AgentConfig",
+    "ProviderConfig",
+    "get_agent_path",
+    "get_persona_path",
+    "get_skill_path",
+    "get_tools_path",
+    "list_agents",
+    "load_agent",
+    "load_agent_persona",
+    "load_agent_skill",
+    "load_agent_tools",
+    "save_agent",
+    "save_agent_persona",
+    "save_agent_skill",
+    "save_agent_tools",
+]

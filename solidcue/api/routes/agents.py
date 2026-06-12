@@ -13,8 +13,8 @@ from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from solidcue.agents.configs.loader import get_agent_path
-from solidcue.agents.configs.schema import AgentConfig, ProviderConfig
+from solidcue.agent_configs.loader import get_agent_path
+from solidcue.agent_configs.schema import AgentConfig, ProviderConfig
 from solidcue.api.run_result import build_run_response
 from solidcue.api.schemas import (
     ResumeAgentRequest,
@@ -25,11 +25,7 @@ from solidcue.api.schemas import (
 )
 from solidcue.observability import generate_env_key
 from solidcue.observability.env import get_env_path
-from solidcue.services.agent_service import (
-    CreateAgentInput,
-    create_agent,
-    get_agents,
-)
+from solidcue.services.agent_service import CreateAgentInput, create_agent
 from solidcue.services.run_engine import (
     cancel_run,
     iter_run_events,
@@ -37,6 +33,7 @@ from solidcue.services.run_engine import (
     start_run,
 )
 from solidcue.services.state_snapshot_service import get_latest_thread_id_for_conversation
+from solidcue.services.workspace_service import get_agents
 from solidcue.services.thread_service import create_thread_id
 
 

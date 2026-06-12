@@ -22,8 +22,8 @@ from uuid import uuid4
 
 from langgraph.types import Command
 
-from solidcue.agents.configs.loader import load_agent
-from solidcue.agents.configs.schema import AgentConfig
+from solidcue.agent_configs.loader import load_agent
+from solidcue.agent_configs.schema import AgentConfig
 from solidcue.core.graph_router.builder import build_async_router_graph
 from solidcue.core.graph_router.nodes._shared import (
     clear_runtime_router_provider_config,

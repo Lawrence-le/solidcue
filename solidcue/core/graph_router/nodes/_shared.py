@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from solidcue.agents.configs.loader import list_agents
+from solidcue.agent_configs.loader import list_agents
 from solidcue.providers.factory import get_provider_from_any_config
 
 _RUNTIME_ROUTER_PROVIDER_CONFIGS: dict[str, Any] = {}

@@ -1,5 +1,4 @@
-
-from .loader import load_agent, list_agents
+from solidcue.agent_configs.loader import list_agents, load_agent
 
 
 def get_agent(agent_id: str):

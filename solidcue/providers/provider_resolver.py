@@ -1,6 +1,6 @@
 from typing import Literal
 
-from solidcue.agents.configs.schema import AgentConfig, ProviderConfig
+from solidcue.agent_configs.schema import AgentConfig, ProviderConfig
 from solidcue.providers.base import BaseProvider
 from solidcue.providers.factory import get_provider
 

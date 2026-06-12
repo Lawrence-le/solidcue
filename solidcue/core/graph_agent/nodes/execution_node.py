@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from markdown_it import MarkdownIt
 
-from solidcue.agents.configs.loader import load_agent
+from solidcue.agent_configs.loader import load_agent
 from solidcue.app.utils.helpers import normalize_tool_output
 from solidcue.core.graph_agent.state.schema import AgentState
 from solidcue.tools.loader import load_mcp_server, load_tool

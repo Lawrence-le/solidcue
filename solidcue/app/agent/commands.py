@@ -10,7 +10,7 @@ from rich.theme import Theme
 from typing import Any
 import json
 
-from solidcue.agents.configs.loader import get_persona_path, get_skill_path, get_tools_path
+from solidcue.agent_configs.loader import get_persona_path, get_skill_path, get_tools_path
 from solidcue.app.utils.helpers import print_select_hint
 from solidcue.app.utils.normalize import normalize_key
 from solidcue.core.utils.debug import (
@@ -18,11 +18,7 @@ from solidcue.core.utils.debug import (
     print_debug_value,
 )
 from solidcue.providers.config import PROVIDER_META
-from solidcue.services.agent_service import (
-    CreateAgentInput,
-    create_agent as create_agent_service,
-    get_agents,
-)
+from solidcue.services.agent_service import CreateAgentInput, create_agent as create_agent_service
 from solidcue.services.run_engine import run_agent_step as run_agent_step_service
 from solidcue.services.state_snapshot_service import (
     build_live_state_snapshot,
@@ -30,6 +26,7 @@ from solidcue.services.state_snapshot_service import (
     get_latest_thread_id,
     list_agent_state_keys,
 )
+from solidcue.services.workspace_service import get_agents
 from solidcue.services.thread_service import create_thread_id
 from solidcue.tools.loader import list_tools
 

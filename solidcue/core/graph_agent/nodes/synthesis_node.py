@@ -5,8 +5,8 @@ from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
-from solidcue.agents.configs.loader import load_agent, load_agent_persona, load_agent_skill
-from solidcue.core.execution.provider_resolver import get_provider_for_role
+from solidcue.agent_configs.loader import load_agent, load_agent_persona, load_agent_skill
+from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
 from solidcue.core.graph_agent.prompts.synthesis_prompt import build_synthesis_messages

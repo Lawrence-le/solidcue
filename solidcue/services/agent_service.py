@@ -5,15 +5,13 @@ Execution (run, stream, resume) lives in ``solidcue.services.run_engine``.
 
 from pydantic import BaseModel
 
-from solidcue.agents.configs.loader import (
-    list_agents,
-    load_agent,
+from solidcue.agent_configs.loader import (
     save_agent,
     save_agent_persona,
     save_agent_skill,
     save_agent_tools,
 )
-from solidcue.agents.configs.schema import AgentConfig, ProviderConfig
+from solidcue.agent_configs.schema import AgentConfig, ProviderConfig
 from solidcue.observability import generate_env_key, write_env_key
 
 
@@ -122,7 +120,3 @@ def create_agent(input_data: CreateAgentInput) -> tuple[AgentConfig, str]:
     save_agent_skill(config.agent_key)
     save_agent_tools(config.agent_key)
     return config, str(path)
-
-
-def get_agents() -> list[AgentConfig]:
-    return list_agents()

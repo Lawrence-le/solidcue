@@ -5,7 +5,7 @@ from unittest.mock import patch
 from solidcue.core.graph_agent.nodes.planning_node import planning_node
 from solidcue.core.graph_agent.nodes.router_node import router_node
 from solidcue.core.graph_agent.prompts.decision_prompt import build_decision_messages
-from solidcue.agents.configs.loader import load_agent
+from solidcue.agent_configs.loader import load_agent
 
 
 def test_planning_node_generates_multi_task_plan() -> None:
