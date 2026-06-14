@@ -161,12 +161,26 @@ def resolve_checkpoint_db_path() -> Path:
     return Path.home() / ".solidcue" / "checkpoints.sqlite"
 
 
+def _connect_checkpoint_db() -> sqlite3.Connection:
+    db_path = resolve_checkpoint_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=1.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 1000")
+    # Request incremental auto-vacuum so free pages can be reclaimed without a
+    # full rewrite. On an existing NONE database this only takes effect after the
+    # next VACUUM (see reclaim_checkpoint_db_space); on a fresh file it applies
+    # immediately, before any tables are created.
+    conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+    return conn
+
+
 def get_latest_thread_id() -> str | None:
     db_path = resolve_checkpoint_db_path()
     if not db_path.exists():
         return None
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = _connect_checkpoint_db()
         cur = conn.cursor()
         cur.execute("SELECT thread_id FROM checkpoints ORDER BY rowid DESC LIMIT 1")
         row = cur.fetchone()
@@ -187,7 +201,7 @@ def get_latest_thread_id_for_conversation(conversation_id: str) -> str | None:
     if not db_path.exists():
         return None
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = _connect_checkpoint_db()
         cur = conn.cursor()
         cur.execute(
             """
@@ -215,7 +229,7 @@ def delete_thread_state(thread_id: str) -> bool:
     if not db_path.exists():
         return False
 
-    conn = sqlite3.connect(str(db_path))
+    conn = _connect_checkpoint_db()
     try:
         cur = conn.cursor()
         cur.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
@@ -245,6 +259,146 @@ def delete_thread_state(thread_id: str) -> bool:
         conn.close()
 
 
+def _resolve_checkpoint_keep_last() -> int:
+    """How many of the most recent checkpoints to retain per thread when pruning.
+
+    Resuming an interrupted thread only needs the latest checkpoint, so the
+    default keeps a small buffer for safety. Override with
+    ``SOLIDCUE_CHECKPOINT_KEEP_LAST``.
+    """
+    raw = os.getenv("SOLIDCUE_CHECKPOINT_KEEP_LAST")
+    if not raw:
+        return 1
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1
+    return value if value >= 1 else 1
+
+
+def prune_thread_checkpoints(thread_id: str, *, keep_last: int | None = None) -> int:
+    """Delete all but the most recent ``keep_last`` checkpoints for a thread.
+
+    LangGraph retains the full checkpoint history per thread by default; for a
+    finished thread the older steps are dead weight. Keeps the newest
+    ``keep_last`` checkpoints per ``checkpoint_ns`` and removes any writes rows
+    that no longer reference a surviving checkpoint. Returns the number of
+    checkpoint rows deleted.
+    """
+    normalized_thread_id = thread_id.strip() if isinstance(thread_id, str) else ""
+    if not normalized_thread_id:
+        return 0
+
+    retain = keep_last if isinstance(keep_last, int) and keep_last >= 1 else _resolve_checkpoint_keep_last()
+
+    db_path = resolve_checkpoint_db_path()
+    if not db_path.exists():
+        return 0
+
+    conn = _connect_checkpoint_db()
+    try:
+        cur = conn.cursor()
+        # checkpoint_id is monotonic (sortable UUID); newest sort last.
+        cur.execute(
+            """
+            DELETE FROM checkpoints
+            WHERE thread_id = ?
+              AND rowid IN (
+                SELECT rowid FROM (
+                    SELECT rowid,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY thread_id, checkpoint_ns
+                               ORDER BY checkpoint_id DESC
+                           ) AS rn
+                    FROM checkpoints
+                    WHERE thread_id = ?
+                ) WHERE rn > ?
+              )
+            """,
+            (normalized_thread_id, normalized_thread_id, retain),
+        )
+        deleted = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+        # Drop writes orphaned by the checkpoint deletions above.
+        cur.execute(
+            """
+            DELETE FROM writes
+            WHERE thread_id = ?
+              AND checkpoint_id NOT IN (
+                SELECT checkpoint_id FROM checkpoints WHERE thread_id = ?
+              )
+            """,
+            (normalized_thread_id, normalized_thread_id),
+        )
+
+        if deleted or (cur.rowcount and cur.rowcount > 0):
+            conn.commit()
+        else:
+            conn.rollback()
+        return deleted
+    finally:
+        conn.close()
+
+
+def reclaim_checkpoint_db_space(*, full: bool = False) -> bool:
+    """Reclaim free pages left behind by checkpoint/writes deletes.
+
+    On a database that still has ``auto_vacuum=NONE`` (the historical default),
+    a one-time full ``VACUUM`` converts it to incremental auto-vacuum and frees
+    every dead page at once. Afterwards (or when ``full`` is False) the much
+    cheaper ``PRAGMA incremental_vacuum`` releases pages on the free list
+    without rewriting the whole file. Returns True if any reclaim ran.
+    """
+    db_path = resolve_checkpoint_db_path()
+    if not db_path.exists():
+        return False
+
+    # VACUUM cannot run inside a transaction — use autocommit mode.
+    conn = sqlite3.connect(str(db_path), timeout=5.0, isolation_level=None)
+    try:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        auto_vacuum = conn.execute("PRAGMA auto_vacuum").fetchone()
+        mode = auto_vacuum[0] if auto_vacuum else 0
+        # mode: 0=NONE, 1=FULL, 2=INCREMENTAL
+        if full or mode != 2:
+            # Switching the auto_vacuum mode only takes effect on a full VACUUM.
+            conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            conn.execute("VACUUM")
+        else:
+            conn.execute("PRAGMA incremental_vacuum")
+        return True
+    except sqlite3.OperationalError:
+        # Database busy / locked — skip; maintenance will retry on a later run.
+        return False
+    finally:
+        conn.close()
+
+
+def run_checkpoint_maintenance(
+    thread_id: str,
+    *,
+    keep_last: int | None = None,
+    reclaim: bool = True,
+) -> dict[str, Any]:
+    """Prune a finished thread's checkpoint history and reclaim free space.
+
+    Safe to call after a run reaches a terminal state. Failures are swallowed so
+    maintenance never breaks the run path. Returns a small summary dict.
+    """
+    pruned = 0
+    reclaimed = False
+    try:
+        pruned = prune_thread_checkpoints(thread_id, keep_last=keep_last)
+    except Exception:
+        pruned = 0
+    if reclaim:
+        try:
+            reclaimed = reclaim_checkpoint_db_space()
+        except Exception:
+            reclaimed = False
+    return {"thread_id": thread_id, "pruned": pruned, "reclaimed": reclaimed}
+
+
 def delete_conversation_state(conversation_id: str) -> bool:
     normalized_conversation_id = conversation_id.strip() if isinstance(conversation_id, str) else ""
     if not normalized_conversation_id:
@@ -254,7 +408,7 @@ def delete_conversation_state(conversation_id: str) -> bool:
     deleted_checkpoint_rows = False
     if db_path.exists():
         try:
-            conn = sqlite3.connect(str(db_path))
+            conn = _connect_checkpoint_db()
             try:
                 cur = conn.cursor()
                 cur.execute(
@@ -295,6 +449,40 @@ def load_conversation_metadata(conversation_id: str) -> dict[str, Any]:
         "last_run_status": None,
         "created_at": None,
         "updated_at": None,
+    }
+
+
+def load_conversation_snapshot(conversation_id: str) -> dict[str, Any]:
+    metadata = load_conversation_metadata(conversation_id)
+    conversation_id_value = metadata.get("conversation_id")
+    normalized_conversation_id = (
+        conversation_id_value.strip()
+        if isinstance(conversation_id_value, str) and conversation_id_value.strip()
+        else conversation_id.strip()
+        if isinstance(conversation_id, str)
+        else ""
+    )
+    return {
+        "conversation_id": normalized_conversation_id,
+        "agent_key": metadata.get("agent_key") if isinstance(metadata.get("agent_key"), str) else None,
+        "worked_seconds": metadata.get("worked_seconds") if isinstance(metadata.get("worked_seconds"), int) else 0,
+        "timer_started_at": None,
+        "last_thread_id": metadata.get("last_thread_id")
+        if isinstance(metadata.get("last_thread_id"), str)
+        else None,
+        "last_run_id": metadata.get("last_run_id")
+        if isinstance(metadata.get("last_run_id"), str)
+        else None,
+        "last_run_status": metadata.get("last_run_status")
+        if isinstance(metadata.get("last_run_status"), str)
+        else None,
+        "created_at": metadata.get("created_at")
+        if isinstance(metadata.get("created_at"), str)
+        else None,
+        "updated_at": metadata.get("updated_at")
+        if isinstance(metadata.get("updated_at"), str)
+        else None,
+        "chat_history": load_chat_history(normalized_conversation_id),
     }
 
 

@@ -13,10 +13,6 @@ import json
 from solidcue.agent_configs.loader import get_persona_path, get_skill_path, get_tools_path
 from solidcue.app.utils.helpers import print_select_hint
 from solidcue.app.utils.normalize import normalize_key
-from solidcue.core.utils.debug import (
-    print_debug_header,
-    print_debug_value,
-)
 from solidcue.providers.config import PROVIDER_META
 from solidcue.services.agent_service import CreateAgentInput, create_agent as create_agent_service
 from solidcue.services.run_engine import run_agent_step as run_agent_step_service
@@ -50,6 +46,18 @@ console = Console(
 )
 
 
+def _print_section(title: str) -> None:
+    print(f"\n[bold cyan]{title}[/bold cyan]")
+
+
+def _print_value(label: str, value: Any) -> None:
+    print(f"[bold bright_white]{label}[/bold bright_white]:")
+    if isinstance(value, (dict, list)):
+        print(json.dumps(value, indent=2, ensure_ascii=False, default=str))
+    else:
+        print(value)
+
+
 def register(app: typer.Typer) -> None:
     app.command("create-agent", rich_help_panel="Agent")(create_agent)
     app.command("list-agents", rich_help_panel="Agent")(list_agents_cmd)
@@ -73,7 +81,7 @@ def snap_cmd(
         if as_json:
             print(json.dumps({"available_keys": keys}, indent=2, ensure_ascii=False))
             return
-        print_debug_header("AVAILABLE STATE KEYS")
+        _print_section("AVAILABLE STATE KEYS")
         for item in keys:
             print(f"- {item}")
         return
@@ -133,7 +141,7 @@ def snap_cmd(
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
-    print_debug_header("SNAPSHOT")
+    _print_section("SNAPSHOT")
     if not payload:
         print("[dim]No state data found.[/dim]")
         return
@@ -143,7 +151,7 @@ def snap_cmd(
             print(value)
             print("")
         else:
-            print_debug_value(state_key, value, max_len=999999)
+            _print_value(state_key, value)
 
 
 def select_agent_tools() -> list[str]:
@@ -469,7 +477,7 @@ def run_agent_cmd(debug: bool = False) -> None:
     )
 
     if debug:
-        print_debug_header("DEBUG Agent Config")
+        _print_section("DEBUG Agent Config")
         print(f"Name: {agent.name}")
         print(f"Description: {agent.description}")
         print(f"Provider: {agent.provider.type}")
@@ -500,20 +508,6 @@ def run_agent_cmd(debug: bool = False) -> None:
             f"{agent.writer_provider.temperature if agent.writer_provider else agent.provider.temperature}"
         )
         print(f"Tools: {agent.tools}")
-
-        # print_debug_header("DEBUG Agent Decision")
-        # print_debug_value("decision", result.get("decision"))
-        # print_debug_value("phase", result.get("phase"))
-        # print_debug_value("router_next", result.get("router_next"))
-
-        # print_debug_header("DEBUG Tool Result")
-        # print_debug_value("tool_call_history", result.get("tool_call_history"), max_len=999999)
-        # print_debug_value("execution_result", result.get("execution_result"))
-
-        # print_debug_header("DEBUG Validation Result")
-        # print_debug_value("validation_result", result.get("validation_result"))
-        # print_debug_value("failure_type", result.get("failure_type"))
-        # print_debug_value("validation_report", result.get("validation_report"))
         _print_metric_usage_summary(result)
 
     print("\n[green]Response:[/green]")
@@ -610,7 +604,7 @@ def _print_metric_usage_summary(result: dict[str, Any]) -> None:
                     merged_payload["model"] = str(payload.get("model") or "")
                     rows.append((node_name, merged_payload))
 
-    print_debug_header("DEBUG Metric Summary")
+    _print_section("DEBUG Metric Summary")
     if not rows:
         print("[dim]No token usage data found in final state.[/dim]")
         return

@@ -63,6 +63,18 @@ def test_run_agent_uses_langgraph_invoke(monkeypatch) -> None:
     assert result["workflow_status"] == "completed"
 
 
+def test_build_run_config_serializes_debug_metadata_as_string() -> None:
+    run_config = agent_service_module._build_run_config(
+        agent_key="generic_assistant",
+        profile_data={"location": "Singapore"},
+        debug=True,
+    )
+
+    assert run_config["metadata"]["debug"] == "true"
+    assert run_config["metadata"]["agent_key"] == "generic_assistant"
+    assert run_config["metadata"]["location"] == "Singapore"
+
+
 def test_run_agent_propagates_langfuse_session_id(monkeypatch) -> None:
     fake_agent = SimpleNamespace(agent_key="generic_assistant")
     fake_profile = SimpleNamespace(model_dump=lambda exclude_none=True: {})

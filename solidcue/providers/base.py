@@ -1,4 +1,5 @@
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -58,8 +59,11 @@ class BaseProvider(ABC):
 
         Default falls back to sync `generate()` for providers without native
         async streaming — subclasses should override with a true async implementation.
+        The blocking call is offloaded to a worker thread so it never freezes the
+        event loop when awaited from an async graph node.
         """
-        output = self.generate(
+        output = await asyncio.to_thread(
+            self.generate,
             messages,
             tools=tools,
             tool_choice=tool_choice,

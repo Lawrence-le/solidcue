@@ -68,8 +68,18 @@ export function Sidebar() {
 
   const { data: threads, isLoading } = useQuery({
     queryKey: ["threads"],
-    queryFn: () => api.listThreads(),
+    queryFn: async () => {
+      try {
+        return await api.listThreads()
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 502) {
+          return []
+        }
+        throw error
+      }
+    },
     refetchInterval: 10_000,
+    retry: false,
   })
 
   const agentKeys = useMemo(() => {

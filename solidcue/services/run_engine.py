@@ -35,7 +35,6 @@ from solidcue.core.graph_agent.nodes.final_output_node import (
     resolve_final_output,
 )
 from solidcue.core.graph_agent.state.schema import AgentState
-from solidcue.core.utils.debug import log_state
 from solidcue.core.utils.metrics import build_metric, build_metric_state_delta
 from solidcue.services.chat_history_service import (
     append_chat_message,
@@ -125,6 +124,19 @@ def cancel_run(run_id: str) -> bool:
     return True
 
 
+def _get_running_run_for_thread(thread_id: str) -> str | None:
+    run_id = _THREAD_LATEST_RUN.get(thread_id)
+    if not run_id:
+        return None
+    current = _ACTIVE_RUNS.get(run_id)
+    task = _RUN_TASKS.get(run_id)
+    if not isinstance(current, dict) or current.get("status") != "running":
+        return None
+    if task is None or task.done():
+        return None
+    return run_id
+
+
 async def is_thread_resumable(thread_id: str) -> dict[str, Any]:
     """Return whether a thread has unfinished graph execution that can be continued.
 
@@ -147,7 +159,7 @@ async def is_thread_resumable(thread_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _build_run_config(*, agent_key: str, profile_data: dict, debug: bool) -> dict:
-    metadata: dict[str, Any] = {"agent_key": agent_key, "debug": debug}
+    metadata: dict[str, Any] = {"agent_key": agent_key, "debug": "true" if debug else "false"}
     for key in ("location", "timezone"):
         value = profile_data.get(key)
         if isinstance(value, str) and value:
@@ -396,19 +408,30 @@ def _persist_conversation_run_state(
     )
 
 
+async def _maintain_thread_checkpoints(thread_id: str) -> None:
+    """Prune a finished thread's checkpoint history and reclaim free pages.
+
+    Runs off the event loop (blocking sqlite) and never raises — checkpoint
+    maintenance must not affect the run's outcome.
+    """
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        return
+    try:
+        # Lazy import avoids a circular dependency with state_snapshot_service.
+        from solidcue.services.state_snapshot_service import run_checkpoint_maintenance
+
+        await asyncio.to_thread(run_checkpoint_maintenance, thread_id)
+    except Exception:
+        return
+
+
 def _invoke_graph(
-    *, graph: Any, input_payload: Any, run_config: dict[str, Any], debug: bool
+    *,
+    graph: Any,
+    input_payload: Any,
+    run_config: dict[str, Any],
 ) -> Any:
-    if not debug:
-        return graph.invoke(input_payload, config=run_config)
-    for update in graph.stream(input_payload, config=run_config, stream_mode="updates"):
-        if not isinstance(update, dict):
-            continue
-        for node_name, node_delta in update.items():
-            if isinstance(node_delta, dict):
-                log_state(str(node_name), node_delta)
-    snapshot = graph.get_state(run_config)
-    return snapshot.values
+    return graph.invoke(input_payload, config=run_config)
 
 
 def _append_resume_chat_history(
@@ -520,9 +543,7 @@ async def _execute_run(
                 )
 
                 interrupted = False
-                async for update in graph.astream(
-                    payload, config=run_config, stream_mode="updates"
-                ):
+                async for update in graph.astream(payload, config=run_config, stream_mode="updates"):
                     if not isinstance(update, dict):
                         continue
 
@@ -732,6 +753,7 @@ async def _execute_run(
                         },
                     }
                 )
+                await _maintain_thread_checkpoints(thread_id)
 
     except asyncio.CancelledError:
         _set_run_status(
@@ -752,6 +774,7 @@ async def _execute_run(
             agent_key=agent_key,
             status="cancelled",
         )
+        await _maintain_thread_checkpoints(thread_id)
         await q.put({"event": "cancelled", "data": {"thread_id": thread_id, "run_id": run_id}})
     except Exception as error:
         _set_run_status(
@@ -773,6 +796,7 @@ async def _execute_run(
             agent_key=agent_key,
             status="error",
         )
+        await _maintain_thread_checkpoints(thread_id)
         await q.put({"event": "error", "data": {"message": str(error)}})
     finally:
         _RUN_TASKS.pop(run_id, None)
@@ -798,20 +822,12 @@ async def start_run(
     Returns the ``run_id`` immediately.  The caller does not wait for the graph
     to finish — it connects to the event stream via ``iter_run_events(run_id)``.
     """
-    run_id = str(uuid4())
     thread_id = thread_id or create_thread_id()
     agent, profile_data, run_config = _load_agent_runtime(agent_key=agent_key, debug=False)
     graph = await build_async_agent_graph(streaming_final_output=True)
     run_config["configurable"] = {"thread_id": thread_id}
     resolved_conversation_id = _resolve_conversation_id(thread_id, conversation_id)
     run_config.setdefault("metadata", {})["conversation_id"] = resolved_conversation_id
-    upsert_conversation(
-        conversation_id=resolved_conversation_id,
-        agent_key=agent.agent_key,
-        last_thread_id=thread_id,
-        last_run_id=run_id,
-        last_run_status="running",
-    )
 
     # Pre-flight: resolve payload and validate state BEFORE starting the task
     # so any ValueError surfaces as an HTTP error, not a queue error.
@@ -847,6 +863,20 @@ async def start_run(
             run_config=run_config,
             as_node="initialize",
         )
+
+    if resume_value is None and payload is None:
+        active_run_id = _get_running_run_for_thread(thread_id)
+        if active_run_id is not None:
+            return active_run_id
+
+    run_id = str(uuid4())
+    upsert_conversation(
+        conversation_id=resolved_conversation_id,
+        agent_key=agent.agent_key,
+        last_thread_id=thread_id,
+        last_run_id=run_id,
+        last_run_status="running",
+    )
 
     q: asyncio.Queue = asyncio.Queue()
     _RUN_QUEUES[run_id] = q
@@ -936,7 +966,6 @@ def run_agent_step(
                                 graph=graph,
                                 input_payload=Command(resume=resume_value),
                                 run_config=run_config,
-                                debug=debug,
                             ),
                         )
                         output = _first_output(result) if isinstance(result, dict) else None
@@ -1000,7 +1029,6 @@ def run_agent_step(
                             graph=graph,
                             input_payload=state,
                             run_config=run_config,
-                            debug=debug,
                         ),
                     )
                     output = _first_output(result) if isinstance(result, dict) else None
@@ -1082,7 +1110,6 @@ def run_agent(
                                 graph=graph,
                                 input_payload=state,
                                 run_config=run_config,
-                                debug=debug,
                             ),
                         ),
                     )
@@ -1134,6 +1161,67 @@ async def stream_agent_graph_events(
     async for event in iter_run_events(run_id):
         yield event
 
+
+async def _execute_router_run(
+    *,
+    run_id: str,
+    router_thread_id: str,
+    resolved_conversation_id: str,
+    payload: Any | None,
+    user_input: str | None,
+    router_provider_config: Any,
+) -> None:
+    q: asyncio.Queue = _RUN_QUEUES[run_id]
+
+    async def emit(event: dict[str, Any]) -> None:
+        await q.put(event)
+
+    try:
+        async for event in _stream_router_chat_events_direct(
+            thread_id=router_thread_id,
+            conversation_id=resolved_conversation_id,
+            payload=payload,
+            user_input=user_input,
+            router_provider_config=router_provider_config,
+            run_id=run_id,
+        ):
+            await emit(event)
+        _set_run_status(
+            thread_id=router_thread_id,
+            status="completed",
+            run_id=run_id,
+            agent_key="router",
+        )
+        _persist_conversation_run_state(
+            conversation_id=resolved_conversation_id,
+            thread_id=router_thread_id,
+            run_id=run_id,
+            agent_key="router",
+            status="completed",
+        )
+    except Exception as error:
+        _set_run_status(
+            thread_id=router_thread_id,
+            status="error",
+            run_id=run_id,
+            agent_key="router",
+            error=str(error),
+        )
+        _persist_conversation_run_state(
+            conversation_id=resolved_conversation_id,
+            thread_id=router_thread_id,
+            run_id=run_id,
+            agent_key="router",
+            status="error",
+        )
+        await emit({"event": "error", "data": {"message": str(error)}})
+    finally:
+        await _maintain_thread_checkpoints(router_thread_id)
+        _RUN_TASKS.pop(run_id, None)
+        await q.put(_QUEUE_SENTINEL)
+        flush_langfuse()
+
+
 async def stream_router_chat_events(
     *,
     thread_id: str | None = None,
@@ -1142,30 +1230,111 @@ async def stream_router_chat_events(
     resume_value: str | None = None,
     router_provider_config: Any = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Run the user-facing router graph, then hand off to a selected agent graph.
+    router_thread_id = thread_id or create_thread_id()
+    resolved_conversation_id = _resolve_conversation_id(router_thread_id, conversation_id)
+    metadata = get_conversation_metadata(resolved_conversation_id) or {}
+    agent_key = (
+        metadata.get("agent_key")
+        if isinstance(metadata.get("agent_key"), str)
+        and metadata.get("agent_key", "").strip()
+        else None
+    )
+    latest_thread_id = (
+        metadata.get("last_thread_id")
+        if isinstance(metadata.get("last_thread_id"), str)
+        and metadata.get("last_thread_id", "").strip()
+        else None
+    )
+    if router_provider_config is None:
+        router_provider_config = load_user_profile().router_provider
 
-    The router graph owns intent detection. When it returns a task handoff, the
-    runtime starts a second graph using the same conversation_id but a fresh
-    thread_id for the target agent.
-    """
+    if user_input is None and resume_value is None:
+        if latest_thread_id:
+            active_run_id = _get_running_run_for_thread(latest_thread_id)
+            if active_run_id is not None:
+                async for event in iter_run_events(active_run_id):
+                    yield event
+                return
+        if agent_key != "router" or not latest_thread_id:
+            raise ValueError("No running router graph found for this conversation")
+        if router_provider_config is None:
+            raise ValueError("router provider is not configured")
+        run_id = str(uuid4())
+        q: asyncio.Queue = asyncio.Queue()
+        _RUN_QUEUES[run_id] = q
+        _set_run_status(
+            thread_id=latest_thread_id,
+            status="running",
+            run_id=run_id,
+            agent_key="router",
+        )
+        _persist_conversation_run_state(
+            conversation_id=resolved_conversation_id,
+            thread_id=latest_thread_id,
+            run_id=run_id,
+            agent_key="router",
+            status="running",
+        )
+        task = asyncio.create_task(
+            _execute_router_run(
+                run_id=run_id,
+                router_thread_id=latest_thread_id,
+                resolved_conversation_id=resolved_conversation_id,
+                payload=None,
+                user_input=None,
+                router_provider_config=router_provider_config,
+            )
+        )
+        _RUN_TASKS[run_id] = task
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+        async for event in iter_run_events(run_id):
+            yield event
+        return
+
     if resume_value is not None:
-        resolved_conversation_id = _resolve_conversation_id(thread_id or create_thread_id(), conversation_id)
-        metadata = get_conversation_metadata(resolved_conversation_id)
-        agent_key = (
-            metadata.get("agent_key")
-            if isinstance(metadata, dict)
-            and isinstance(metadata.get("agent_key"), str)
-            and metadata.get("agent_key", "").strip()
-            else None
-        )
-        latest_thread_id = (
-            metadata.get("last_thread_id")
-            if isinstance(metadata, dict)
-            and isinstance(metadata.get("last_thread_id"), str)
-            and metadata.get("last_thread_id", "").strip()
-            else None
-        )
-        if not agent_key or not latest_thread_id:
+        if agent_key == "router" and latest_thread_id:
+            if router_provider_config is None:
+                raise ValueError("router provider is not configured")
+            append_chat_message(
+                conversation_id=resolved_conversation_id,
+                role="user",
+                content=resume_value,
+                agent_key="router",
+            )
+            run_id = str(uuid4())
+            q = asyncio.Queue()
+            _RUN_QUEUES[run_id] = q
+            _set_run_status(
+                thread_id=latest_thread_id,
+                status="running",
+                run_id=run_id,
+                agent_key="router",
+            )
+            _persist_conversation_run_state(
+                conversation_id=resolved_conversation_id,
+                thread_id=latest_thread_id,
+                run_id=run_id,
+                agent_key="router",
+                status="running",
+            )
+            task = asyncio.create_task(
+                _execute_router_run(
+                    run_id=run_id,
+                    router_thread_id=latest_thread_id,
+                    resolved_conversation_id=resolved_conversation_id,
+                    payload=Command(resume=resume_value),
+                    user_input=None,
+                    router_provider_config=router_provider_config,
+                )
+            )
+            _RUN_TASKS[run_id] = task
+            _BACKGROUND_TASKS.add(task)
+            task.add_done_callback(_BACKGROUND_TASKS.discard)
+            async for event in iter_run_events(run_id):
+                yield event
+            return
+        if not latest_thread_id or agent_key is None:
             raise ValueError("No routed agent thread found for this conversation")
         async for event in stream_agent_graph_events(
             agent_key=agent_key,
@@ -1177,27 +1346,91 @@ async def stream_router_chat_events(
             yield event
         return
 
-    if user_input is None:
-        raise ValueError("user_input is required")
+    if router_provider_config is None:
+        raise ValueError("router provider is not configured")
 
-    router_thread_id = thread_id or create_thread_id()
-    resolved_conversation_id = _resolve_conversation_id(router_thread_id, conversation_id)
-    append_chat_message(
-        conversation_id=resolved_conversation_id,
-        role="user",
-        content=user_input,
+    run_id = str(uuid4())
+    q: asyncio.Queue = asyncio.Queue()
+    _RUN_QUEUES[run_id] = q
+    _set_run_status(
+        thread_id=router_thread_id,
+        status="running",
+        run_id=run_id,
         agent_key="router",
     )
+    _persist_conversation_run_state(
+        conversation_id=resolved_conversation_id,
+        thread_id=router_thread_id,
+        run_id=run_id,
+        agent_key="router",
+        status="running",
+    )
+    if user_input is not None:
+        append_chat_message(
+            conversation_id=resolved_conversation_id,
+            role="user",
+            content=user_input,
+            agent_key="router",
+        )
+    task = asyncio.create_task(
+        _execute_router_run(
+            run_id=run_id,
+            router_thread_id=router_thread_id,
+            resolved_conversation_id=resolved_conversation_id,
+            payload=_build_router_initial_state(
+                thread_id=router_thread_id,
+                conversation_id=resolved_conversation_id,
+                user_input=user_input or "",
+                worked_seconds=0,
+                timer_started_at=time.time(),
+            )
+            if user_input is not None
+            else None,
+            user_input=user_input,
+            router_provider_config=router_provider_config,
+        )
+    )
+    _RUN_TASKS[run_id] = task
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+    async for event in iter_run_events(run_id):
+        yield event
+
+
+async def _stream_router_chat_events_direct(
+    *,
+    thread_id: str | None = None,
+    conversation_id: str | None = None,
+    payload: Any | None = None,
+    user_input: str | None = None,
+    resume_value: str | None = None,
+    router_provider_config: Any = None,
+    run_id: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Run the user-facing router graph, then hand off to a selected agent graph.
+
+    The router graph owns intent detection. When it returns a task handoff, the
+    runtime starts a second graph using the same conversation_id but a fresh
+    thread_id for the target agent.
+    """
+    router_thread_id = thread_id or create_thread_id()
+    resolved_conversation_id = _resolve_conversation_id(router_thread_id, conversation_id)
 
     configure_langsmith_tracing_env()
     graph = await build_async_router_graph()
     run_config: dict[str, Any] = {
         "configurable": {"thread_id": router_thread_id},
+        "run_name": "solidcue:router",
+        "tags": ["solidcue", "langgraph", "router"],
         "metadata": {
             "conversation_id": resolved_conversation_id,
             "agent_key": "router",
         },
     }
+    callbacks = get_langfuse_callbacks()
+    if callbacks:
+        run_config["callbacks"] = callbacks
     router_timer_finalized = False
 
     with start_langfuse_root_span(
@@ -1214,43 +1447,103 @@ async def stream_router_chat_events(
                     "agent_key": "router",
                 },
             }
+
+            router_streamed_chunks: list[str] = []
+            router_message_started = False
+            emitted_router_nodes: set[str] = set()
+
+            def emit_router_node(node: str, phase: Any = None) -> dict[str, Any]:
+                emitted_router_nodes.add(node)
+                return {
+                    "event": "node",
+                    "data": {
+                        "node": node,
+                        "phase": phase if isinstance(phase, str) else None,
+                        "tokens": None,
+                    },
+                }
+
             try:
                 async for update in graph.astream(
-                    _build_router_initial_state(
-                        thread_id=router_thread_id,
-                        conversation_id=resolved_conversation_id,
-                        user_input=user_input,
-                        worked_seconds=0,
-                        timer_started_at=time.time(),
+                    payload
+                    if payload is not None
+                    else (
+                        _build_router_initial_state(
+                            thread_id=router_thread_id,
+                            conversation_id=resolved_conversation_id,
+                            user_input=user_input or "",
+                            worked_seconds=0,
+                            timer_started_at=time.time(),
+                        )
+                        if user_input is not None
+                        else None
                     ),
                     config=run_config,
-                    stream_mode="updates",
+                    stream_mode=["updates", "custom"],
+                    version="v2",
                 ):
                     if not isinstance(update, dict):
                         continue
-                    for node_name, node_delta in update.items():
-                        if isinstance(node_delta, dict):
-                            await asyncio.sleep(0)
+                    update_type = update.get("type")
+                    if update_type == "updates":
+                        data = update.get("data")
+                        if isinstance(data, dict):
+                            for node_name, node_delta in data.items():
+                                if isinstance(node_delta, dict):
+                                    router_node = str(node_name)
+                                    if router_node in {"initialize", "intent_router", "handoff", "final_output"}:
+                                        phase = node_delta.get("router_intent")
+                                        if router_node == "handoff":
+                                            phase = node_delta.get("router_next") or phase
+                                        elif router_node == "final_output":
+                                            phase = node_delta.get("router_next") or phase
+                                        await asyncio.sleep(0)
+                                        yield emit_router_node(router_node, phase)
+                    elif update_type == "custom":
+                        chunk = update.get("data")
+                        if isinstance(chunk, str) and chunk:
+                            if not router_message_started:
+                                router_message_started = True
+                                yield {
+                                    "event": "message_start",
+                                    "data": {
+                                        "thread_id": router_thread_id,
+                                        "conversation_id": resolved_conversation_id,
+                                        "phase": "router",
+                                    },
+                                }
+                            router_streamed_chunks.append(chunk)
                             yield {
-                                "event": "node",
+                                "event": "message_delta",
                                 "data": {
-                                    "node": str(node_name),
-                                    "phase": node_delta.get("router_intent"),
-                                    "tokens": None,
+                                    "thread_id": router_thread_id,
+                                    "delta": chunk,
                                 },
                             }
 
                 snapshot = await graph.aget_state(run_config)
                 values = getattr(snapshot, "values", None)
                 state: dict[str, Any] = values if isinstance(values, dict) else {}
-                output = _first_output(state) or ""
+                if "intent_router" not in emitted_router_nodes:
+                    yield emit_router_node(
+                        "intent_router",
+                        state.get("router_intent") or state.get("router_next"),
+                    )
+                output = "".join(router_streamed_chunks) if router_streamed_chunks else (_first_output(state) or "")
                 handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
                 target_agent_key = _resolve_routed_agent_key(state)
                 handoff_action = handoff.get("action") if isinstance(handoff, dict) else None
+                if handoff_action == "route_agent" and "handoff" not in emitted_router_nodes:
+                    yield emit_router_node("handoff", state.get("router_next") or handoff_action)
+                if "final_output" not in emitted_router_nodes:
+                    yield emit_router_node(
+                        "final_output",
+                        state.get("router_next") or state.get("router_intent"),
+                    )
 
                 if isinstance(target_agent_key, str) and target_agent_key.strip() and handoff_action == "route_agent":
                     agent_thread_id = create_thread_id()
-                    if output:
+                    if output and not router_message_started:
                         await _finalize_checkpoint_timer(
                             graph=graph,
                             run_config=run_config,
@@ -1278,6 +1571,13 @@ async def stream_router_chat_events(
                                 "delta": output,
                             },
                         }
+                    elif output:
+                        append_chat_message(
+                            conversation_id=resolved_conversation_id,
+                            role="assistant",
+                            content=output,
+                            agent_key="router",
+                        )
                     if not router_timer_finalized:
                         await _finalize_checkpoint_timer(
                             graph=graph,
@@ -1326,21 +1626,22 @@ async def stream_router_chat_events(
                         content=output,
                         agent_key="router",
                     )
-                    yield {
-                        "event": "message_start",
-                        "data": {
-                            "thread_id": router_thread_id,
-                            "conversation_id": resolved_conversation_id,
-                            "phase": state.get("router_intent"),
-                        },
-                    }
-                    yield {
-                        "event": "message_delta",
-                        "data": {
-                            "thread_id": router_thread_id,
-                            "delta": output,
-                        },
-                    }
+                    if not router_message_started:
+                        yield {
+                            "event": "message_start",
+                            "data": {
+                                "thread_id": router_thread_id,
+                                "conversation_id": resolved_conversation_id,
+                                "phase": state.get("router_intent"),
+                            },
+                        }
+                        yield {
+                            "event": "message_delta",
+                            "data": {
+                                "thread_id": router_thread_id,
+                                "delta": output,
+                            },
+                        }
 
                 if not router_timer_finalized:
                     await _finalize_checkpoint_timer(

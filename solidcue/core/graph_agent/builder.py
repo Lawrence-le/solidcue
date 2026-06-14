@@ -45,6 +45,9 @@ def _build_checkpointer() -> Any:
         checkpoint_db_path = _resolve_checkpoint_db_path()
         checkpoint_db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(checkpoint_db_path), check_same_thread=False)
+        # Set before SqliteSaver creates its tables so a fresh database is born
+        # with incremental auto-vacuum (free pages reclaimable without a rewrite).
+        conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         return SqliteSaver(conn)
     except ModuleNotFoundError:
         from langgraph.checkpoint.memory import InMemorySaver
@@ -71,6 +74,9 @@ async def _get_async_checkpointer() -> Any:
             checkpoint_db_path = _resolve_checkpoint_db_path()
             checkpoint_db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = await aiosqlite.connect(str(checkpoint_db_path))
+            # Set before AsyncSqliteSaver creates its tables so a fresh database
+            # is born with incremental auto-vacuum.
+            await conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             _async_checkpointer = AsyncSqliteSaver(conn)
         except ModuleNotFoundError:
             from langgraph.checkpoint.memory import InMemorySaver

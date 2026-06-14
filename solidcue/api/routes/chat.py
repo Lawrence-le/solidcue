@@ -20,15 +20,16 @@ def _sse_frame(event: str, data: dict[str, object]) -> str:
 
 @router.post("/stream")
 async def stream(request: StreamChatRequest) -> StreamingResponse:
-    if request.user_input is None and request.resume_value is None:
+    is_reconnect = request.user_input is None and request.resume_value is None
+    if is_reconnect and not request.thread_id and not request.conversation_id:
         raise HTTPException(
             status_code=400,
-            detail="user_input or resume_value is required",
+            detail="thread_id or conversation_id is required to reconnect",
         )
     router_provider = request.router_provider
-    if request.user_input is not None and router_provider is None:
+    if router_provider is None:
         router_provider = load_user_profile().router_provider
-    if request.user_input is not None and router_provider is None:
+    if router_provider is None and (request.user_input is not None or is_reconnect):
         raise HTTPException(status_code=400, detail="router provider is not configured")
     if request.resume_value is not None and not request.thread_id and not request.conversation_id:
         raise HTTPException(

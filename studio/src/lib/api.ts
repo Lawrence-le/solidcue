@@ -93,6 +93,8 @@ export const api = {
     request<ConversationThreadResponse>(`/state/conversations/${conversationId}/latest-thread`),
   conversationMetadata: (conversationId: string) =>
     request<ConversationMetadataResponse>(`/state/conversations/${conversationId}/metadata`),
+  conversationSnapshot: (conversationId: string) =>
+    request<LiveStateResponse>(`/state/conversations/${conversationId}/snapshot`),
   conversationLiveState: (conversationId: string, keys: string[]) =>
     request<LiveStateResponse>(
       `/state/conversations/${conversationId}/live?${keys.map((k) => `key=${k}`).join("&")}`,

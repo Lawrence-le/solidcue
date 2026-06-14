@@ -16,7 +16,13 @@ def resolve_checkpoint_db_path() -> Path:
 def _connect() -> sqlite3.Connection:
     db_path = resolve_checkpoint_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=1.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 1000")
+    # Incremental auto-vacuum lets deletes reclaim space; on an existing NONE
+    # database this applies only after the next full VACUUM.
+    conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+    return conn
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:

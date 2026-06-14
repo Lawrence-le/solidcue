@@ -18,6 +18,7 @@ from solidcue.services.state_snapshot_service import (
     delete_conversation_state,
     get_conversation_interrupt_payload,
     load_conversation_metadata,
+    load_conversation_snapshot,
     get_latest_thread_id_for_conversation,
     build_state_snapshot,
     delete_thread_state,
@@ -31,6 +32,15 @@ from solidcue.services.state_snapshot_service import (
 from solidcue.services.run_engine import get_thread_run_status, is_thread_resumable
 
 router = APIRouter(prefix="/state", tags=["state"])
+
+
+def _connect_checkpoint_db() -> sqlite3.Connection:
+    db_path = resolve_checkpoint_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=1.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 1000")
+    return conn
 
 
 class ThreadSummary(BaseModel):
@@ -56,7 +66,7 @@ def list_threads() -> list[ThreadSummary]:
     if not db_path.exists():
         return []
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = _connect_checkpoint_db()
         cur = conn.cursor()
         cur.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'checkpoints'")
         if cur.fetchone() is None:
@@ -206,6 +216,13 @@ async def live_conversation_snapshot(
     else:
         filtered_state = state
     return StateSnapshotResponse(thread_id=get_latest_thread_id_for_conversation(conversation_id), state=filtered_state)
+
+
+@router.get("/conversations/{conversation_id}/snapshot", response_model=StateSnapshotResponse)
+def conversation_snapshot(conversation_id: str) -> StateSnapshotResponse:
+    state = load_conversation_snapshot(conversation_id)
+    thread_id = state.get("last_thread_id") if isinstance(state.get("last_thread_id"), str) else None
+    return StateSnapshotResponse(thread_id=thread_id, state=state)
 
 
 @router.get("/resumable/{thread_id}")
