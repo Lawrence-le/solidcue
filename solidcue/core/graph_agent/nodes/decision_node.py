@@ -8,10 +8,9 @@ from typing import Any
 from solidcue.agent_configs.loader import load_agent
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState, ToolCallState
-from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
+from solidcue.core.utils.metrics import build_metric_state_delta, timed_async_stream_generate
 from solidcue.core.graph_agent.prompts.decision_prompt import build_decision_messages
 from solidcue.tools.loader import load_tool, get_missing_required_tool_fields, split_missing_tool_fields
-from solidcue.services.chat_history_service import load_chat_history
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +145,7 @@ class DecisionValidator:
 
 # --- Primary Node Function ---
 
-def decision_node(state: AgentState) -> dict[str, Any]:
+async def decision_node(state: AgentState) -> dict[str, Any]:
     agent_key = state.get("agent_key")
     user_input = state.get("user_input", "")
     phase = state.get("phase") or "source"
@@ -192,10 +191,10 @@ def decision_node(state: AgentState) -> dict[str, Any]:
         retry_reason=state.get("retry_reason"),
         metadata=metadata,
         tool_call_history=scoped_tool_call_history,
-        chat_history=load_chat_history(state.get("conversation_id") or state.get("thread_id"), limit=12),
+        chat_history=state.get("chat_history") or [],
     )
     provider = get_provider_for_role(agent_config, "brain")
-    output_text, metric_decision = timed_generate(provider, messages, node_name="decision")
+    output_text, metric_decision = await timed_async_stream_generate(provider, messages, node_name="decision")
 
     available_tools = agent_config.tools if hasattr(agent_config, "tools") else []
     if not available_tools:

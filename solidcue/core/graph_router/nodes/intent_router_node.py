@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from langgraph.runtime import Runtime
 
 from solidcue.agent_configs.loader import list_agents
 from solidcue.core.graph_router.nodes._shared import (
+    _PROFILE_ROUTER_PROVIDER,
     extract_json_object,
     get_runtime_router_provider,
     normalize_text,
@@ -34,6 +36,30 @@ def _available_agents() -> list[dict[str, str]]:
             }
         )
     return agents
+
+
+def _normalize_plan(
+    raw_plan: object,
+    *,
+    user_input: str,
+    valid_agent_keys: set[str],
+) -> list[dict[str, str]]:
+    """Coerce the model's plan into a validated list of {agent_key, sub_task} steps.
+
+    Unknown agent keys are dropped. Steps missing a sub_task fall back to the
+    original user input so the worker still receives a task.
+    """
+    plan: list[dict[str, str]] = []
+    if isinstance(raw_plan, list):
+        for step in raw_plan:
+            if not isinstance(step, dict):
+                continue
+            agent_key = normalize_text(step.get("agent_key"))
+            if not agent_key or agent_key not in valid_agent_keys:
+                continue
+            sub_task = normalize_text(step.get("sub_task")) or user_input
+            plan.append({"agent_key": agent_key, "sub_task": sub_task})
+    return plan
 
 
 async def intent_router_node(
@@ -67,6 +93,10 @@ async def intent_router_node(
             "target_agent_key": "",
             "handoff": {},
         }
+    if provider is None:
+        # Under LangGraph Server there is no FastAPI layer to seed the in-memory
+        # cache, so fall back to the user's profile provider loaded at import time.
+        provider = _PROFILE_ROUTER_PROVIDER
     if provider is None:
         return {
             "router_intent": "clarify",
@@ -127,10 +157,45 @@ async def intent_router_node(
         parsed.get("intent")
     )
     router_next = normalize_text(parsed.get("router_next"))
-    target_agent_key = normalize_text(parsed.get("target_agent_key"))
-    if not target_agent_key and router_intent == "task":
-        target_agent_key = select_target_agent_key(user_input)
     route_reason = normalize_text(parsed.get("route_reason"))
+
+    valid_agent_keys = {agent["agent_key"] for agent in available_agents}
+    plan = _normalize_plan(
+        parsed.get("plan"),
+        user_input=user_input,
+        valid_agent_keys=valid_agent_keys,
+    )
+
+    if router_intent == "task" and not plan:
+        # The model classified this as work but gave no usable plan. Honor an
+        # explicit (legacy) target_agent_key if present, otherwise fall back to
+        # the single-agent heuristic so the request still gets routed.
+        legacy_key = normalize_text(parsed.get("target_agent_key"))
+        fallback_key = legacy_key if legacy_key in valid_agent_keys else select_target_agent_key(user_input)
+        if fallback_key in valid_agent_keys:
+            plan = [{"agent_key": fallback_key, "sub_task": user_input}]
+
+    if router_intent == "task" and not plan:
+        # No agent can take this work — ask for clarification instead of dropping it.
+        message = "I don't have an agent that can handle that yet. Could you clarify what you need?"
+        return {
+            "router_intent": "clarify",
+            "router_next": "final_output",
+            "route_reason": route_reason or "No matching agent for the requested task.",
+            "target_agent_key": "",
+            "assistant_draft": message,
+            "final_response": message,
+            "plan": [],
+            "handoff": {},
+        }
+
+    # Keep the single-agent fields populated for backward compatibility: the first
+    # step is the primary handoff target.
+    target_agent_key = plan[0]["agent_key"] if plan else ""
+
+    if plan and router_intent == "task":
+        router_next = "handoff"
+
     handoff = parsed.get("handoff")
     if not isinstance(handoff, dict) and router_next == "handoff":
         handoff = {
@@ -146,5 +211,6 @@ async def intent_router_node(
         "target_agent_key": target_agent_key,
         "assistant_draft": assistant_draft,
         "final_response": assistant_draft,
+        "plan": plan,
         "handoff": handoff if isinstance(handoff, dict) else {},
     }

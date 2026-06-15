@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 from solidcue.agent_configs.loader import load_agent, load_agent_persona, load_agent_skill
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
-from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
+from solidcue.core.utils.metrics import build_metric_state_delta, timed_async_stream_generate
 from solidcue.core.graph_agent.prompts.synthesis_prompt import build_synthesis_messages
 
 """
@@ -257,7 +257,7 @@ def _write_draft_to_handoff(state: AgentState, draft: str) -> dict[str, Any]:
 # Section: core node
 # ---------------------------------------------------------------------------
 
-def synthesis_node(state: AgentState) -> dict[str, Any]:
+async def synthesis_node(state: AgentState) -> dict[str, Any]:
     """
     Produces synthesis_draft from collected evidence.
     Task completion is handled by the router after validation passes.
@@ -316,7 +316,7 @@ def synthesis_node(state: AgentState) -> dict[str, Any]:
             skill_text=skill_for_synthesis,
             task_description=task_description,
         )
-        polished, metric_synthesis = timed_generate(provider, messages, node_name="synthesis")
+        polished, metric_synthesis = await timed_async_stream_generate(provider, messages, node_name="synthesis")
         polished_text = str(polished or "").strip()
 
         # Safety fallback: if generation looks invalid, preserve source material.

@@ -24,3 +24,12 @@ class RouterState(AgentState, total=False):
     handoff: dict[str, Any]
     assistant_draft: str
     messages: Annotated[list[dict[str, Any]], operator.add]
+
+    # Orchestration: the router acts as a manager. `plan` lists the sub-agents
+    # (agent graphs) to dispatch for a task, each with the sub-task it should do.
+    # `agent_results` is append-only — one entry per worker once it finishes.
+    # `synthesis_draft` is the router's final user-facing answer composed from
+    # all worker outputs.
+    plan: list[dict[str, Any]]
+    agent_results: Annotated[list[dict[str, Any]], operator.add]
+    synthesis_draft: str

@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from solidcue.core.graph_agent.nodes.validation_hhem_node import (
     validation_hhem_node,
     _split_claims,
@@ -26,27 +28,31 @@ def _make_state(draft=None, handoff=None, user_input=None, agent_key=None):
     return state
 
 
-def test_empty_draft_fails():
-    result = validation_hhem_node(_make_state(draft=""))
+@pytest.mark.asyncio
+async def test_empty_draft_fails():
+    result = await validation_hhem_node(_make_state(draft=""))
     assert result["failure_type"] == "bad_synthesis"
     assert "empty" in result["validation_report"]["reason"].lower()
 
 
-def test_none_draft_fails():
-    result = validation_hhem_node(_make_state(draft=None))
+@pytest.mark.asyncio
+async def test_none_draft_fails():
+    result = await validation_hhem_node(_make_state(draft=None))
     assert result["failure_type"] == "bad_synthesis"
 
 
-def test_no_premise_skips_with_pass():
-    result = validation_hhem_node(_make_state(draft="Some output", handoff={}, user_input=""))
+@pytest.mark.asyncio
+async def test_no_premise_skips_with_pass():
+    result = await validation_hhem_node(_make_state(draft="Some output", handoff={}, user_input=""))
     assert result["failure_type"] is None
     assert result["validation_report"]["score"] == 1.0
 
 
+@pytest.mark.asyncio
 @patch("solidcue.core.graph_agent.nodes.validation_hhem_node._score_groundedness")
-def test_all_claims_grounded_passes(mock_score):
+async def test_all_claims_grounded_passes(mock_score):
     mock_score.return_value = (0.85, [{"claim": "Python is a language.", "score": 0.85}], {})
-    result = validation_hhem_node(_make_state(
+    result = await validation_hhem_node(_make_state(
         draft="Python is a programming language.",
         handoff={"source::u_1": {"content": "Python is a popular programming language."}},
     ))
@@ -54,15 +60,16 @@ def test_all_claims_grounded_passes(mock_score):
     assert result["validation_report"]["score"] == 0.85
 
 
+@pytest.mark.asyncio
 @patch("solidcue.core.graph_agent.nodes.validation_hhem_node._llm_verify_failures")
 @patch("solidcue.core.graph_agent.nodes.validation_hhem_node._score_groundedness")
-def test_hhem_fails_but_llm_clears_metadata(mock_score, mock_llm):
+async def test_hhem_fails_but_llm_clears_metadata(mock_score, mock_llm):
     mock_score.return_value = (0.01, [
         {"claim": "# Darren Liew", "score": 0.01},
         {"claim": "Led a team of 4 engineers.", "score": 0.85},
     ], {})
     mock_llm.return_value = ([], "All flagged items are metadata.", {})
-    result = validation_hhem_node(_make_state(
+    result = await validation_hhem_node(_make_state(
         draft="# Darren Liew\nLed a team of 4 engineers.",
         handoff={"source::u_1": {"content": "Darren led engineering teams."}},
         agent_key="test_agent",
@@ -71,14 +78,15 @@ def test_hhem_fails_but_llm_clears_metadata(mock_score, mock_llm):
     assert "metadata" in result["validation_report"]["reason"].lower()
 
 
+@pytest.mark.asyncio
 @patch("solidcue.core.graph_agent.nodes.validation_hhem_node._llm_verify_failures")
 @patch("solidcue.core.graph_agent.nodes.validation_hhem_node._score_groundedness")
-def test_hhem_fails_and_llm_confirms_hallucination(mock_score, mock_llm):
+async def test_hhem_fails_and_llm_confirms_hallucination(mock_score, mock_llm):
     mock_score.return_value = (0.1, [
         {"claim": "Managed a $2M budget annually.", "score": 0.1},
     ], {})
     mock_llm.return_value = (["Managed a $2M budget annually."], "Not supported by source.", {})
-    result = validation_hhem_node(_make_state(
+    result = await validation_hhem_node(_make_state(
         draft="Managed a $2M budget annually.",
         handoff={"source::u_1": {"content": "Junior developer for 2 years."}},
         agent_key="test_agent",
@@ -87,10 +95,11 @@ def test_hhem_fails_and_llm_confirms_hallucination(mock_score, mock_llm):
     assert "Managed a $2M budget" in result["validation_report"]["reason"]
 
 
+@pytest.mark.asyncio
 @patch("solidcue.core.graph_agent.nodes.validation_hhem_node._score_groundedness")
-def test_no_premise_from_handoff_skips_scoring(mock_score):
+async def test_no_premise_from_handoff_skips_scoring(mock_score):
     mock_score.return_value = (0.7, [{"claim": "The answer is 42.", "score": 0.7}], {})
-    result = validation_hhem_node(_make_state(
+    result = await validation_hhem_node(_make_state(
         draft="The answer is 42.",
         user_input="What is the meaning of life?",
     ))
@@ -191,7 +200,8 @@ def test_score_groundedness_scores_all_premise_chunks(monkeypatch):
     assert stats["hhem_pair_count"] == stats["hhem_chunk_count"]
 
 
-def test_llm_verify_uses_max_tokens_cap(monkeypatch):
+@pytest.mark.asyncio
+async def test_llm_verify_uses_max_tokens_cap(monkeypatch):
     captured = {}
 
     class Provider:
@@ -206,19 +216,19 @@ def test_llm_verify_uses_max_tokens_cap(monkeypatch):
         lambda _agent, _role: Provider(),
     )
 
-    def fake_timed_generate(provider, messages, *, node_name="llm", max_tokens=None):
+    async def fake_timed_async_stream_generate(provider, messages, *, node_name="llm", max_tokens=None):
         captured["max_tokens"] = max_tokens
         captured["node_name"] = node_name
         return '{"real_failures": [], "reason": "ok"}', {"tokens": {}, "time_s": 0.0, "model": "test-model"}
 
     monkeypatch.setattr(
-        "solidcue.core.graph_agent.nodes.validation_hhem_node.timed_generate",
-        fake_timed_generate,
+        "solidcue.core.graph_agent.nodes.validation_hhem_node.timed_async_stream_generate",
+        fake_timed_async_stream_generate,
     )
 
     from solidcue.core.graph_agent.nodes.validation_hhem_node import _llm_verify_failures
 
-    real_failures, _, _ = _llm_verify_failures(
+    real_failures, _, _ = await _llm_verify_failures(
         {"agent_key": "test_agent"},
         [{"claim": "Redis", "score": 0.1}],
         "Resume premise",

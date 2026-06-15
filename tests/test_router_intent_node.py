@@ -46,7 +46,15 @@ async def test_intent_router_returns_json_payload(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_intent_router_keeps_direct_instruction_as_task_when_provider_missing() -> None:
+async def test_intent_router_returns_clarify_when_provider_invalid(monkeypatch) -> None:
+    # When the router provider raises ValueError (misconfigured / missing),
+    # the node must return clarify + a message telling the user to configure a provider.
+    # It must NOT attempt to route the request as a task.
+    def _raise_missing(_thread_id):
+        raise ValueError("No provider configured")
+
+    monkeypatch.setattr(intent_router_module, "get_runtime_router_provider", _raise_missing)
+
     result = await intent_router_node(
         {
             "thread_id": "thread-2",
@@ -56,6 +64,8 @@ async def test_intent_router_keeps_direct_instruction_as_task_when_provider_miss
     )
 
     assert result["router_intent"] == "clarify"
+    assert result["router_next"] == "final_output"
+    # Response must mention "provider" so the user knows what to fix.
     assert "provider" in str(result["final_response"]).casefold()
 
 

@@ -16,6 +16,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { api, ApiError } from "@/lib/api"
+import { lgDeleteThread, lgListThreads } from "@/lib/lgClient"
 import type { ThreadSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -70,7 +71,7 @@ export function Sidebar() {
     queryKey: ["threads"],
     queryFn: async () => {
       try {
-        return await api.listThreads()
+        return await lgListThreads()
       } catch (error) {
         if (error instanceof ApiError && error.status === 502) {
           return []
@@ -101,7 +102,10 @@ export function Sidebar() {
   const ok = health.isSuccess && health.data?.status === "ok"
 
   const deleteThread = useMutation({
-    mutationFn: (conversationId: string) => api.deleteConversation(conversationId),
+    mutationFn: async (conversationId: string) => {
+      const deleted = await lgDeleteThread(conversationId)
+      if (!deleted) throw new Error("Could not delete session")
+    },
     onSuccess: (_, deletedConversationId) => {
       toast.success("Session deleted")
       qc.invalidateQueries({ queryKey: ["threads"] })
@@ -115,7 +119,10 @@ export function Sidebar() {
 
   const deleteThreads = useMutation({
     mutationFn: async (conversationIds: string[]) => {
-      await Promise.all(conversationIds.map((conversationId) => api.deleteConversation(conversationId)))
+      const results = await Promise.all(conversationIds.map((conversationId) => lgDeleteThread(conversationId)))
+      if (results.some((deleted) => !deleted)) {
+        throw new Error("Could not delete one or more sessions")
+      }
       return conversationIds
     },
     onSuccess: (deletedConversationIds) => {

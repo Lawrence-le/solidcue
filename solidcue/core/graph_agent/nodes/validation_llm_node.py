@@ -7,7 +7,7 @@ from typing import Any
 from solidcue.agent_configs.loader import load_agent
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
-from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
+from solidcue.core.utils.metrics import build_metric_state_delta, timed_async_stream_generate
 from solidcue.core.graph_agent.prompts.validation_llm_prompt import build_validation_messages
 
 """
@@ -216,7 +216,7 @@ def _build_validation_evidence_from_handoff(state: AgentState) -> list[dict[str,
     return evidence
 
 
-def _llm_validate(state: AgentState, draft_output: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+async def _llm_validate(state: AgentState, draft_output: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     agent_key = state.get("agent_key")
     if not isinstance(agent_key, str) or not agent_key:
         return None, {}
@@ -239,7 +239,7 @@ def _llm_validate(state: AgentState, draft_output: str) -> tuple[dict[str, Any] 
             validation_evidence=evidence_for_validation,
             task_description=task_description,
         )
-        raw_output, metric_validation = timed_generate(
+        raw_output, metric_validation = await timed_async_stream_generate(
             provider,
             messages,
             node_name="validation",
@@ -259,7 +259,7 @@ def _artifact_has_delivery_id(content: Any) -> bool:
     return any(content.get(k) for k in _ARTIFACT_ID_KEYS)
 
 
-def validation_llm_node(state: AgentState) -> dict[str, Any]:
+async def validation_llm_node(state: AgentState) -> dict[str, Any]:
     """
     Validates synthesized user-facing draft content only.
     Emits only failure_type + validation_report. Router owns retry counters and
@@ -282,7 +282,7 @@ def validation_llm_node(state: AgentState) -> dict[str, Any]:
             metric_validation=metric_validation,
         )
 
-    llm_result, metric_validation = _llm_validate(state, draft_output)
+    llm_result, metric_validation = await _llm_validate(state, draft_output)
     if llm_result is None:
         return _fail(
             "bad_synthesis",

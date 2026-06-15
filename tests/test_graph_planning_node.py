@@ -1,14 +1,17 @@
 """Tests for task planning node (Phase 3)."""
 
+import pytest
+
 from solidcue.core.graph_agent.nodes.planning_node import (
     _guardrail_normalize_task_shape,
     planning_node,
 )
 
 
-def test_planning_generates_task_plan_for_artifact_request() -> None:
+@pytest.mark.asyncio
+async def test_planning_generates_task_plan_for_artifact_request() -> None:
     """Planning node should generate tasks for artifact generation requests."""
-    result = planning_node(
+    result = await planning_node(
         {
             "user_input": "Generate a resume from this job posting",
         }
@@ -27,9 +30,10 @@ def test_planning_generates_task_plan_for_artifact_request() -> None:
     assert "status" in first_task
 
 
-def test_planning_creates_synthesis_only_for_simple_requests() -> None:
+@pytest.mark.asyncio
+async def test_planning_creates_synthesis_only_for_simple_requests() -> None:
     """Planning node should create single synthesis task for simple requests."""
-    result = planning_node(
+    result = await planning_node(
         {
             "user_input": "What is machine learning?",
         }
@@ -43,9 +47,10 @@ def test_planning_creates_synthesis_only_for_simple_requests() -> None:
     assert all("type" in task for task in result["task_plan"])
 
 
-def test_planning_handles_empty_user_input() -> None:
+@pytest.mark.asyncio
+async def test_planning_handles_empty_user_input() -> None:
     """Planning node should handle empty user input gracefully."""
-    result = planning_node({})
+    result = await planning_node({})
 
     assert "task_plan" in result
     assert isinstance(result["task_plan"], list)
@@ -57,10 +62,11 @@ def test_planning_handles_empty_user_input() -> None:
     assert "synthesis" in task_types
 
 
-def test_planning_includes_source_gathering_for_document_requests() -> None:
+@pytest.mark.asyncio
+async def test_planning_includes_source_gathering_for_document_requests() -> None:
     """Planning node should include source gathering for document creation."""
     user_input = "Create a document from these files"
-    result = planning_node(
+    result = await planning_node(
         {
             "user_input": user_input,
         }
@@ -75,9 +81,10 @@ def test_planning_includes_source_gathering_for_document_requests() -> None:
         assert any(t in task_types for t in ["source_gathering", "artifact_generation", "synthesis"])
 
 
-def test_planning_sets_tasks_to_pending() -> None:
+@pytest.mark.asyncio
+async def test_planning_sets_tasks_to_pending() -> None:
     """Planning node should set all generated tasks to pending status."""
-    result = planning_node(
+    result = await planning_node(
         {
             "user_input": "Write a summary of the document",
         }
@@ -88,9 +95,10 @@ def test_planning_sets_tasks_to_pending() -> None:
         assert task.get("status") == "pending"
 
 
-def test_planning_returns_messages() -> None:
+@pytest.mark.asyncio
+async def test_planning_returns_messages() -> None:
     """Planning node should include the initial user message."""
-    result = planning_node(
+    result = await planning_node(
         {
             "user_input": "Generate a resume",
         }
@@ -102,8 +110,9 @@ def test_planning_returns_messages() -> None:
     assert result["messages"][0].get("role") == "system"
 
 
-def test_planning_includes_token_stats() -> None:
-    result = planning_node(
+@pytest.mark.asyncio
+async def test_planning_includes_token_stats() -> None:
+    result = await planning_node(
         {
             "user_input": "Generate a resume",
         }

@@ -1,6 +1,6 @@
 """Integration tests for Phase 3 task planning."""
 
-from unittest.mock import patch
+import pytest
 
 from solidcue.core.graph_agent.nodes.planning_node import planning_node
 from solidcue.core.graph_agent.nodes.router_node import router_node
@@ -8,9 +8,10 @@ from solidcue.core.graph_agent.prompts.decision_prompt import build_decision_mes
 from solidcue.agent_configs.loader import load_agent
 
 
-def test_planning_node_generates_multi_task_plan() -> None:
+@pytest.mark.asyncio
+async def test_planning_node_generates_multi_task_plan() -> None:
     """Planning node should generate multiple tasks for complex requests."""
-    result = planning_node(
+    result = await planning_node(
         {
             "user_input": "Create a resume document from this job posting and compare it with my experience",
         }
@@ -65,7 +66,7 @@ def test_decision_prompt_includes_task_context() -> None:
 
 
 def test_router_advances_task_plan_on_success() -> None:
-    """Router should advance current_task when LLM confirms task complete."""
+    """Router should advance current_task when required accomplishments are met."""
     state = {
         "phase": "source",
         "failure_type": None,
@@ -94,10 +95,18 @@ def test_router_advances_task_plan_on_success() -> None:
             },
         ],
         "user_input": "Create a resume",
+        "tool_call_history": [
+            {
+                "task_id": "task_1",
+                "tool_name": "drive_read_file",
+                "tool_input": {"path": "profile.md"},
+                "success": True,
+                "accomplishments": ["profile_data_met"],
+            }
+        ],
     }
 
-    with patch("solidcue.core.graph_agent.nodes.router_node._llm_task_complete", return_value=(True, ["profile_data"], [], "")):
-        result = router_node(state)
+    result = router_node(state)
 
     assert result["current_task"] == "task_2"
     assert result["phase"] == "artifact"

@@ -1,8 +1,11 @@
+import pytest
+
 from solidcue.core.graph_agent.nodes.reflection_node import reflection_node
 
 
-def test_reflection_returns_missing_source_on_empty_source_content() -> None:
-    result = reflection_node(
+@pytest.mark.asyncio
+async def test_reflection_returns_missing_source_on_empty_source_content() -> None:
+    result = await reflection_node(
         {
             "phase": "source",
             "current_task": "task_1",
@@ -16,8 +19,9 @@ def test_reflection_returns_missing_source_on_empty_source_content() -> None:
     assert legacy_key not in result
 
 
-def test_reflection_returns_bad_artifact_for_failed_artifact_execution() -> None:
-    result = reflection_node(
+@pytest.mark.asyncio
+async def test_reflection_returns_bad_artifact_for_failed_artifact_execution() -> None:
+    result = await reflection_node(
         {
             "phase": "artifact",
             "current_task": "task_1",
@@ -30,7 +34,8 @@ def test_reflection_returns_bad_artifact_for_failed_artifact_execution() -> None
     assert legacy_key not in result
 
 
-def test_reflection_updates_accomplishments_without_legacy_evidence_field() -> None:
+@pytest.mark.asyncio
+async def test_reflection_updates_accomplishments_without_legacy_evidence_field() -> None:
     state = {
         "phase": "source",
         "agent_key": "assistant",
@@ -58,7 +63,7 @@ def test_reflection_updates_accomplishments_without_legacy_evidence_field() -> N
         "execution_result": {"success": True, "type": "tool_execution", "content": {"text": "data"}, "error": None},
     }
 
-    result = reflection_node(state)
+    result = await reflection_node(state)
     assert result["failure_type"] is None
     assert "tool_call_history" in result
     legacy_key = "context" + "_evidence"

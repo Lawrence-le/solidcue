@@ -7,12 +7,23 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  Circle,
   Loader2,
   Send,
   Settings2,
   Square,
 } from "lucide-react";
-import { api, ApiError, streamAgent, streamChat } from "@/lib/api";
+import { api, ApiError } from "@/lib/api"
+import {
+  clearPersistedRun,
+  joinLangGraph,
+  lgCancelRun,
+  lgCreateThread,
+  loadPersistedRun,
+  loadThreadMapping,
+  persistThreadMapping,
+  streamLangGraph,
+} from "@/lib/lgClient";
 import type {
   InterruptPayload,
   StreamEvent,
@@ -95,6 +106,15 @@ interface NodeEvent {
   ts: number;
   status: "running" | "done";
   tokens?: NodeTokens;
+}
+
+interface SubagentStep {
+  agentKey: string;
+  subTask: string;
+  stepIndex: number;
+  stepCount: number;
+  status: "pending" | "running" | "completed" | "failed" | "interrupted";
+  output: string;
 }
 
 let _msgId = 0;
@@ -344,6 +364,80 @@ function StepHistory({ events }: { events: NodeEvent[] }) {
   );
 }
 
+function SubagentActivity({
+  steps,
+  intro,
+  resolveName,
+}: {
+  steps: SubagentStep[];
+  intro: string;
+  resolveName: (agentKey: string) => string;
+}) {
+  if (steps.length === 0 && !intro) return null;
+
+  return (
+    <div className="space-y-1.5 px-1">
+      <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground/70">
+        Plan
+      </p>
+      {intro && (
+        <p className="text-xs leading-snug text-foreground/80">{intro}</p>
+      )}
+      <div className="space-y-1.5">
+        {[...steps]
+          .sort((a, b) => a.stepIndex - b.stepIndex)
+          .map((step) => {
+            const isRunning = step.status === "running";
+            const isPending = step.status === "pending";
+            const failed = step.status === "failed" || step.status === "interrupted";
+            return (
+              <div
+                key={step.stepIndex}
+                className={cn(
+                  "rounded-md border border-border/60 px-2.5 py-1.5",
+                  isPending ? "bg-muted/10 opacity-70" : "bg-muted/20",
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <div className="mt-0.5">
+                    {isRunning ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                    ) : isPending ? (
+                      <Circle className="h-3.5 w-3.5 text-muted-foreground/40" />
+                    ) : failed ? (
+                      <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
+                    ) : (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+                    )}
+                  </div>
+                  <span className="text-xs font-medium text-foreground/90">
+                    {resolveName(step.agentKey)}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/60">
+                    {step.stepIndex + 1}/{step.stepCount}
+                  </span>
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground/60">
+                    {step.status}
+                  </span>
+                </div>
+                {step.subTask && (
+                  <p className="mt-1 pl-5 text-[11px] leading-snug text-muted-foreground/80">
+                    {step.subTask}
+                  </p>
+                )}
+                {step.output && (
+                  <p className="mt-1 pl-5 text-[11px] leading-snug text-muted-foreground/55 line-clamp-3 whitespace-pre-wrap">
+                    {step.output}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
+
 function formatWorkedLabel(seconds: number): string {
   if (seconds < 1) {
     return `Worked for ${Math.max(1, Math.round(seconds * 1000))} ms >`;
@@ -425,6 +519,8 @@ export function SessionsPage() {
   const [runId, setRunId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [nodeEvents, setNodeEvents] = useState<NodeEvent[]>([]);
+  const [subagentSteps, setSubagentSteps] = useState<SubagentStep[]>([]);
+  const [planIntro, setPlanIntro] = useState<string>("");
   const [nodeRailWidth, setNodeRailWidth] = useState(getInitialNodeRailWidth);
   const nodeRailResizerRef = useRef<HTMLDivElement>(null);
   const [runState, setRunState] = useState<RunState>("idle");
@@ -450,10 +546,45 @@ export function SessionsPage() {
   const nodeRailWidthRef = useRef(nodeRailWidth);
   const preserveNodeTimelineOnStartRef = useRef(false);
   const reconnectStatusMessageIdRef = useRef<string | null>(null);
+  // LangGraph Server thread ID for the current conversation (different from the
+  // conversation UUID used as the URL param — see lgClient.ts for the mapping).
+  const lgThreadIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     nodeRailWidthRef.current = nodeRailWidth;
   }, [nodeRailWidth]);
+
+  // On page load, check whether there's an in-progress LangGraph run for the
+  // current conversation (identified by last_event_id in sessionStorage).  If
+  // found, rejoin immediately so gap events from the disconnect window are
+  // replayed — this is the fix for the original "refresh loses events" bug.
+  useEffect(() => {
+    if (!conversationId || runState !== "idle") return;
+    const lgThreadId = loadThreadMapping(conversationId);
+    if (!lgThreadId) return;
+    const persisted = loadPersistedRun(lgThreadId);
+    if (!persisted) return;
+
+    lgThreadIdRef.current = lgThreadId;
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setRunState("streaming");
+
+    joinLangGraph(lgThreadId, persisted.runId, persisted.lastEventId, handleEvent, ctrl.signal)
+      .catch((err: unknown) => {
+        if ((err as Error).name !== "AbortError") {
+          clearPersistedRun(lgThreadId);
+          setRunState("error");
+          addMessage({ role: "error", content: String(err) });
+        }
+      })
+      .finally(() => {
+        abortRef.current = null;
+      });
+    // handleEvent and addMessage are stable — intentionally not listed to avoid
+    // double-firing when runState transitions from streaming back to completed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
 
   // Abort any active SSE stream cleanly before the page unloads so the browser
   // loading indicator doesn't hang and the server can detect the disconnect.
@@ -726,6 +857,7 @@ export function SessionsPage() {
       ) {
         abortRef.current?.abort();
         streamingAssistantIdRef.current = null;
+        lgThreadIdRef.current = null;
         setConversationId("");
         setThreadId(null);
         setRunId(null);
@@ -753,6 +885,7 @@ export function SessionsPage() {
     // New conversation/session — reset everything
     abortRef.current?.abort();
     streamingAssistantIdRef.current = null;
+    lgThreadIdRef.current = null;
     setConversationId(conversationParam);
     setThreadId(null);
     setRunId(null);
@@ -767,17 +900,27 @@ export function SessionsPage() {
     setTimerVersion(0);
     runStartedAtRef.current = null;
 
-    loadConversationSnapshot(conversationParam, { silentRunning: true })
-      .catch(() => {
-        setMessages([
-          {
-            role: "system",
-            content: `Conversation ${conversationParam.slice(0, 8)} loaded.`,
-            id: msgId(),
-          },
-        ]);
-      })
-      .finally(() => setLoadingSession(false));
+    // If there's an in-progress LangGraph run for this conversation, skip the
+    // snapshot load — the rejoin useEffect will stream the missing events and
+    // the snapshot's .catch() would otherwise wipe out those messages.
+    const lgThreadIdForConv = loadThreadMapping(conversationParam);
+    const hasPersistedRun = lgThreadIdForConv ? !!loadPersistedRun(lgThreadIdForConv) : false;
+
+    if (hasPersistedRun) {
+      setLoadingSession(false);
+    } else {
+      loadConversationSnapshot(conversationParam, { silentRunning: true })
+        .catch(() => {
+          setMessages([
+            {
+              role: "system",
+              content: `Conversation ${conversationParam.slice(0, 8)} loaded.`,
+              id: msgId(),
+            },
+          ]);
+        })
+        .finally(() => setLoadingSession(false));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     agentParam,
@@ -951,11 +1094,57 @@ export function SessionsPage() {
           ];
         });
       } else if (e.event === "handoff") {
+        // Legacy single-agent handoff. The orchestrator now emits `subagent`
+        // events instead; kept for backward compatibility.
         setAgentKey(e.data.target_agent_key);
         setThreadId(e.data.agent_thread_id);
         setWorkedSeconds(0);
         setLiveWorkedSeconds(0);
         runStartedAtRef.current = null;
+      } else if (e.event === "plan") {
+        // The router (manager) announces what it will do before any worker runs.
+        // Pre-populate every step as pending so the user sees the full plan upfront.
+        setPlanIntro(e.data.intro || "");
+        setSubagentSteps(
+          e.data.steps.map((s) => ({
+            agentKey: s.agent_key,
+            subTask: s.sub_task,
+            stepIndex: s.step_index,
+            stepCount: e.data.step_count,
+            status: "pending" as const,
+            output: "",
+          })),
+        );
+      } else if (e.event === "subagent") {
+        // The router (manager) is dispatching a worker. Stay in this chat —
+        // just track which sub-agent is working and its status.
+        const d = e.data;
+        setSubagentSteps((prev) => {
+          const existing = prev.findIndex((s) => s.stepIndex === d.step_index);
+          const next: SubagentStep = {
+            agentKey: d.agent_key,
+            subTask: d.sub_task,
+            stepIndex: d.step_index,
+            stepCount: d.step_count,
+            status: d.status,
+            output: existing >= 0 ? prev[existing].output : "",
+          };
+          if (existing >= 0) {
+            const copy = [...prev];
+            copy[existing] = { ...copy[existing], ...next, output: copy[existing].output };
+            return copy;
+          }
+          return [...prev, next];
+        });
+      } else if (e.event === "subagent_delta") {
+        const d = e.data;
+        setSubagentSteps((prev) =>
+          prev.map((s) =>
+            s.stepIndex === d.step_index
+              ? { ...s, output: s.output + d.delta }
+              : s,
+          ),
+        );
       } else if (e.event === "interrupt") {
         removeReconnectStatusMessage();
         markNodeDone(nodeEvents[nodeEvents.length - 1]?.node ?? "");
@@ -1018,7 +1207,18 @@ export function SessionsPage() {
   );
 
   const handleContinue = useCallback(async () => {
-    if (!conversationId || !agentKey) return;
+    if (!conversationId) return;
+    const lgThreadId = lgThreadIdRef.current ?? loadThreadMapping(conversationId);
+    if (!lgThreadId) {
+      setRunState("idle");
+      return;
+    }
+    const persisted = loadPersistedRun(lgThreadId);
+    if (!persisted) {
+      setRunState("idle");
+      await loadConversationSnapshot(conversationId);
+      return;
+    }
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -1026,20 +1226,7 @@ export function SessionsPage() {
     setResumable(false);
     preserveNodeTimelineOnStartRef.current = true;
     try {
-      if (agentKey === "router") {
-        await streamChat(
-          { conversation_id: conversationId },
-          handleEvent,
-          ctrl.signal,
-        );
-      } else {
-        await streamAgent(
-          agentKey,
-          { conversation_id: conversationId },
-          handleEvent,
-          ctrl.signal,
-        );
-      }
+      await joinLangGraph(lgThreadId, persisted.runId, persisted.lastEventId, handleEvent, ctrl.signal);
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         streamingAssistantIdRef.current = null;
@@ -1061,11 +1248,10 @@ export function SessionsPage() {
         }
       }
     }
-  }, [agentKey, conversationId, finalizeWorkedTimer, handleEvent]);
+  }, [conversationId, finalizeWorkedTimer, handleEvent, loadConversationSnapshot]);
 
   async function startRun(
     input: string,
-    resumeValue?: string,
     conversationIdOverride?: string,
     preserveNodeTimeline = false,
   ) {
@@ -1076,22 +1262,26 @@ export function SessionsPage() {
     preserveNodeTimelineOnStartRef.current = preserveNodeTimeline;
     if (!preserveNodeTimeline) {
       setNodeEvents([]);
+      setSubagentSteps([]);
+      setPlanIntro("");
     }
 
-    const body = resumeValue
-      ? {
-          conversation_id:
-            conversationIdOverride || conversationId || undefined,
-          resume_value: resumeValue,
-        }
-      : {
-          conversation_id:
-            conversationIdOverride || conversationId || undefined,
-          user_input: input,
-        };
+    const effectiveConversationId = conversationIdOverride || conversationId || undefined;
 
     try {
-      await streamChat(body, handleEvent, ctrl.signal);
+      // ── LangGraph Server path (chat/clarify intents) ──────────────────────
+      // Ensure we have a LangGraph thread for this conversation.  On the very
+      // first message for a conversation the thread doesn't exist yet; create it
+      // and store the mapping so page reloads can look it up.
+      if (!lgThreadIdRef.current && effectiveConversationId) {
+        const lgThreadId = await lgCreateThread(effectiveConversationId);
+        lgThreadIdRef.current = lgThreadId;
+        persistThreadMapping(effectiveConversationId, lgThreadId);
+      }
+
+      if (lgThreadIdRef.current) {
+        await streamLangGraph(lgThreadIdRef.current, input, handleEvent, ctrl.signal);
+      }
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         streamingAssistantIdRef.current = null;
@@ -1130,18 +1320,18 @@ export function SessionsPage() {
       navigate(`/sessions?${nextParams.toString()}`, { replace: true });
       setUserInput("");
       addMessage({ role: "user", content: text });
-      startRun(text, undefined, nextConversationId, false);
+      startRun(text, nextConversationId, false);
       return;
     }
     setUserInput("");
     addMessage({ role: "user", content: text });
-    startRun(text, undefined, undefined, false);
+    startRun(text, undefined, false);
   }
 
-  function handleResume(value: string) {
-    setRunState("streaming");
-    startRun("", value, undefined, true);
-  }
+  // handleResume is wired to ApprovalCard (interrupt UI). NodeInterrupt is never
+  // raised in any graph node, so this function is never called in practice.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  function handleResume(_value: string) {}
 
   async function handleStop() {
     stopIntentionalRef.current = true;
@@ -1151,12 +1341,14 @@ export function SessionsPage() {
     finalizeWorkedTimer();
     setRunState("cancelled");
     setNodeEvents((prev) => prev.map((ev) => ({ ...ev, status: "done" })));
-    if (agentKey && runId) {
+    const lgThreadId = lgThreadIdRef.current ?? (conversationId ? loadThreadMapping(conversationId) : null);
+    if (lgThreadId && runId) {
       try {
-        await api.cancelRun(agentKey, runId);
+        await lgCancelRun(lgThreadId, runId);
       } catch {
         /* best effort */
       }
+      clearPersistedRun(lgThreadId);
     }
     if (conversationId) {
       try {
@@ -1166,42 +1358,6 @@ export function SessionsPage() {
       }
     }
     setResumable(true);
-  }
-
-  async function handleResumeFromCancel() {
-    if (!conversationId || !agentKey) return;
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setRunState("streaming");
-    setResumable(false);
-    preserveNodeTimelineOnStartRef.current = true;
-    try {
-      await streamAgent(
-        agentKey,
-        { conversation_id: conversationId },
-        handleEvent,
-        ctrl.signal,
-      );
-    } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        streamingAssistantIdRef.current = null;
-        pendingConversationIdRef.current = null;
-        abortRef.current = null;
-        addMessage({
-          role: "error",
-          content: (err as ApiError).message ?? String(err),
-        });
-        finalizeWorkedTimer();
-        setRunState("error");
-      } else {
-        streamingAssistantIdRef.current = null;
-        pendingConversationIdRef.current = null;
-        abortRef.current = null;
-        finalizeWorkedTimer();
-        setRunState("idle");
-      }
-    }
   }
 
   const streaming = runState === "streaming";
@@ -1320,6 +1476,16 @@ export function SessionsPage() {
                   <StepHistory events={nodeEvents} />
                 )}
 
+                {(subagentSteps.length > 0 || planIntro) && (
+                  <SubagentActivity
+                    steps={subagentSteps}
+                    intro={planIntro}
+                    resolveName={(key) =>
+                      agents?.find((a) => a.agent_key === key)?.name ?? key
+                    }
+                  />
+                )}
+
                 {showWorkedTimer && (
                   <div className="px-1">
                     <div className="mb-2 h-px w-full bg-border/60" />
@@ -1357,11 +1523,7 @@ export function SessionsPage() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={
-                  runState === "cancelled"
-                    ? handleResumeFromCancel
-                    : handleContinue
-                }
+                onClick={handleContinue}
               >
                 {runState === "cancelled" ? "Resume" : "Rejoin"}
               </Button>

@@ -1,21 +1,19 @@
+import asyncio
+import json
+from typing import Any
+
 import typer
 from InquirerPy import inquirer
 from rich import print
 from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.table import Table
 from rich.theme import Theme
-from typing import Any
-import json
 
 from solidcue.agent_configs.loader import get_persona_path, get_skill_path, get_tools_path
 from solidcue.app.utils.helpers import print_select_hint
 from solidcue.app.utils.normalize import normalize_key
 from solidcue.providers.config import PROVIDER_META
 from solidcue.services.agent_service import CreateAgentInput, create_agent as create_agent_service
-from solidcue.services.run_engine import run_agent_step as run_agent_step_service
 from solidcue.services.state_snapshot_service import (
     build_live_state_snapshot,
     build_state_snapshot,
@@ -23,7 +21,6 @@ from solidcue.services.state_snapshot_service import (
     list_agent_state_keys,
 )
 from solidcue.services.workspace_service import get_agents
-from solidcue.services.thread_service import create_thread_id
 from solidcue.tools.loader import list_tools
 
 console = Console(
@@ -63,6 +60,138 @@ def register(app: typer.Typer) -> None:
     app.command("list-agents", rich_help_panel="Agent")(list_agents_cmd)
     app.command("run-agent", rich_help_panel="Agent")(run_agent_cmd)
     app.command("snap", rich_help_panel="Debug")(snap_cmd)
+
+
+def run_agent_cmd(
+    input_text: str | None = typer.Argument(None, help="Message to send to the router graph"),
+    server: str = typer.Option("http://localhost:2024", "--server", help="LangGraph Server URL"),
+    debug: bool = typer.Option(False, "--debug", help="Show thread, run, node, and metric debug details."),
+) -> None:
+    """Stream a run through the LangGraph Server router graph and print the response."""
+    if not input_text:
+        input_text = inquirer.text(message="Message to send:").execute()
+    if not input_text or not input_text.strip():
+        print("[red]Missing message input.[/red]")
+        raise typer.Exit(1)
+    asyncio.run(_run_agent_async(input_text.strip(), server, debug=debug))
+
+
+def _chunk_field(chunk: Any, field: str) -> Any:
+    if isinstance(chunk, dict):
+        return chunk.get(field)
+    return getattr(chunk, field, None)
+
+
+def _print_metric_summary(values: dict[str, Any]) -> None:
+    events = values.get("metric_usage_events")
+    if not isinstance(events, list) or not events:
+        print("[dim]No metric usage events found in final thread state.[/dim]")
+        return
+
+    table = Table(title="Metric usage")
+    table.add_column("Node")
+    table.add_column("Model")
+    table.add_column("Prompt", justify="right")
+    table.add_column("Completion", justify="right")
+    table.add_column("Total", justify="right")
+    table.add_column("Estimated", justify="right")
+    table.add_column("Time", justify="right")
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        table.add_row(
+            str(event.get("node") or ""),
+            str(event.get("model") or ""),
+            str(event.get("prompt_tokens") or 0),
+            str(event.get("completion_tokens") or 0),
+            str(event.get("total_tokens") or 0),
+            str(event.get("estimated_total") or 0),
+            f"{float(event.get('time_s') or 0):.2f}s",
+        )
+    console.print(table)
+
+
+async def _run_agent_async(user_input: str, server_url: str, *, debug: bool = False) -> None:
+    try:
+        from langgraph_sdk import get_client as lg_get_client
+    except ImportError:
+        print("[red]langgraph-sdk not installed. Run: uv add langgraph-sdk[/red]")
+        raise typer.Exit(1)
+
+    client = lg_get_client(url=server_url)
+
+    try:
+        results = await client.assistants.search(graph_id="router", limit=1)
+    except Exception as exc:
+        print(f"[red]LangGraph Server not reachable at {server_url}: {exc}[/red]")
+        raise typer.Exit(1)
+
+    if results:
+        assistant_id = results[0]["assistant_id"]
+    else:
+        a = await client.assistants.create(graph_id="router", config={})
+        assistant_id = a["assistant_id"]
+
+    thread = await client.threads.create()
+    thread_id = thread["thread_id"]
+
+    print(f"[dim]thread: {thread_id}[/dim]")
+    if debug:
+        print(f"[dim]server: {server_url}[/dim]")
+        print(f"[dim]assistant: {assistant_id}[/dim]")
+    print(f"[dim]> {user_input}[/dim]\n")
+
+    final_response: str | None = None
+    run_id: str | None = None
+
+    async for chunk in client.runs.stream(
+        thread_id,
+        assistant_id,
+        input={"user_input": user_input},
+        stream_mode=["updates", "messages", "custom"],
+        stream_resumable=True,
+    ):
+        event = _chunk_field(chunk, "event")
+        data = _chunk_field(chunk, "data")
+
+        if event == "metadata" and isinstance(data, dict):
+            run_id = data.get("run_id") or run_id
+            if debug and run_id:
+                print(f"[dim]run: {run_id}[/dim]")
+
+        elif event == "updates" and isinstance(data, dict):
+            if debug:
+                for node in data:
+                    print(f"[dim]node: {node}[/dim]")
+            if "final_output" in data:
+                final_response = (data["final_output"] or {}).get("final_response") or final_response
+
+        elif event in ("messages", "messages/partial") and isinstance(data, list) and data:
+            item = data[0]
+            msg = item[0] if isinstance(item, list) else item
+            content = (msg or {}).get("content", "") if isinstance(msg, dict) else ""
+            if isinstance(content, str) and content:
+                console.print(content, end="", highlight=False)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        console.print(block.get("text", ""), end="", highlight=False)
+
+    print("")
+    if final_response:
+        print("\n[bold bright_white]Response:[/bold bright_white]")
+        from rich.markdown import Markdown
+        console.print(Markdown(final_response))
+
+    if debug:
+        try:
+            snapshot = await client.threads.get_state(thread_id)
+            values = snapshot.get("values") if isinstance(snapshot, dict) else getattr(snapshot, "values", None)
+            if isinstance(values, dict):
+                _print_metric_summary(values)
+        except Exception as exc:
+            print(f"[yellow]Could not load final debug state: {exc}[/yellow]")
 
 
 def snap_cmd(
@@ -367,481 +496,3 @@ def list_agents_cmd() -> None:
 
         print("")
 
-
-def _read_multiline_prompt() -> str:
-    """Read a multi-line prompt from the user.
-
-    Supports two input modes:
-    1. Single-line: type a message and press Enter — returns immediately.
-    2. Multi-line paste: detects buffered text and drains it all.
-
-    Uses a two-phase timeout strategy:
-    - Short initial probe (50ms) after the first line to detect if this is
-      a paste or a typed single line.
-    - Longer drain timeout (500ms) between subsequent lines to tolerate
-      chunked paste delivery from the terminal.
-
-    This prevents leftover pasted text from leaking into the shell after
-    the application exits.
-    """
-    import sys
-    import select
-
-    print("[dim]Enter your prompt (paste multi-line text freely, end with an empty line):[/dim]")
-    lines: list[str] = []
-    first_line = sys.stdin.readline()
-    if not first_line:
-        return ""
-    lines.append(first_line.rstrip("\n").rstrip("\r"))
-
-    # Short probe: is there more data buffered (paste) or was this typed?
-    if not hasattr(select, "select"):
-        return "\n".join(lines).strip()
-
-    ready, _, _ = select.select([sys.stdin], [], [], 0.05)
-    if not ready:
-        # Single-line typed input — return immediately.
-        return "\n".join(lines).strip()
-
-    # Multi-line paste detected — drain with a generous timeout to handle
-    # chunked delivery. Terminal emulators paste in bursts with gaps that
-    # can exceed 100ms on large payloads.
-    while True:
-        line = sys.stdin.readline()
-        if not line:  # EOF
-            break
-        lines.append(line.rstrip("\n").rstrip("\r"))
-        # Wait for next chunk; 500ms tolerates slow paste delivery.
-        ready, _, _ = select.select([sys.stdin], [], [], 0.5)
-        if not ready:
-            break
-
-    return "\n".join(lines).strip()
-
-
-def run_agent_cmd(debug: bool = False) -> None:
-    """Run an existing AI agent."""
-    agents = get_agents()
-
-    if not agents:
-        print("[red]No agents found.[/red]")
-        raise typer.Exit(1)
-
-    agent_key = inquirer.select(
-        message="Select agent:",
-        choices=[
-            {
-                "name": f"{agent.agent_key} ({agent.name})",
-                "value": agent.agent_key,
-            }
-            for agent in agents
-        ],
-    ).execute()
-
-    prompt = _read_multiline_prompt()
-    thread_id = create_thread_id()
-
-    try:
-        agent, result = run_agent_step_service(
-            agent_key=agent_key,
-            user_input=prompt,
-            thread_id=thread_id,
-            debug=debug,
-        )
-        while True:
-            payload = _extract_interrupt_payload(result)
-            if payload is None:
-                break
-            resume_value = _prompt_interrupt_resume(payload)
-            _, result = run_agent_step_service(
-                agent_key=agent_key,
-                thread_id=thread_id,
-                debug=debug,
-                resume_value=resume_value,
-            )
-    except Exception as error:
-        print(f"[red]{error}[/red]")
-        raise typer.Exit(1)
-
-    if debug:
-        print("[dim]──────────────── CLI debug summary ────────────────[/dim]")
-
-    print(f"[yellow]Running agent:[/yellow] {agent.name}")
-
-    output = (
-        result.get("final_output")
-        or result.get("final_response")
-        or result.get("synthesis_draft")
-        or result.get("draft_output")
-        or "No final response generated."
-    )
-
-    if debug:
-        _print_section("DEBUG Agent Config")
-        print(f"Name: {agent.name}")
-        print(f"Description: {agent.description}")
-        print(f"Provider: {agent.provider.type}")
-        print(f"Brain model: {agent.provider.model}")
-        print(f"Brain temp: {agent.provider.temperature}")
-        print(
-            "Lite model: "
-            f"{agent.lite_provider.model if agent.lite_provider else agent.provider.model}"
-        )
-        print(
-            "Lite temp: "
-            f"{agent.lite_provider.temperature if agent.lite_provider else agent.provider.temperature}"
-        )
-        print(
-            "Reviewer model: "
-            f"{agent.reviewer_provider.model if agent.reviewer_provider else agent.provider.model}"
-        )
-        print(
-            "Reviewer temp: "
-            f"{agent.reviewer_provider.temperature if agent.reviewer_provider else agent.provider.temperature}"
-        )
-        print(
-            "Writer model: "
-            f"{agent.writer_provider.model if agent.writer_provider else agent.provider.model}"
-        )
-        print(
-            "Writer temp: "
-            f"{agent.writer_provider.temperature if agent.writer_provider else agent.provider.temperature}"
-        )
-        print(f"Tools: {agent.tools}")
-        _print_metric_usage_summary(result)
-
-    print("\n[green]Response:[/green]")
-    _render_user_facing_value(output, panel_multiline=False)
-    print()
-
-
-def _print_metric_usage_summary(result: dict[str, Any]) -> None:
-    _NODE_EXECUTION_ORDER = [
-        "initialize",
-        "classifier",
-        "discovery",
-        "planning",
-        "decision",
-        "execution",
-        "reflection",
-        "synthesis",
-        "validation",
-        "validation_hhem",
-        "final_output",
-    ]
-    _node_order_index = {name: i for i, name in enumerate(_NODE_EXECUTION_ORDER)}
-
-    metric_key_to_node = {
-        "metric_classifier": "classifier",
-        "metric_discovery": "discovery",
-        "metric_planning": "planning",
-        "metric_decision": "decision",
-        "metric_reflection": "reflection",
-        "metric_synthesis": "synthesis",
-        "metric_validation": "validation",
-        "metric_validation_hhem": "validation_hhem",
-        "metric_final_output": "final_output",
-    }
-
-    aggregated_by_node: dict[str, dict[str, Any]] = {}
-    events = result.get("metric_usage_events")
-    if isinstance(events, list) and events:
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            node_name = str(event.get("node") or "").strip()
-            if not node_name:
-                continue
-            if node_name not in aggregated_by_node:
-                aggregated_by_node[node_name] = {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                    "cached_tokens": 0,
-                    "estimated_total": 0,
-                    "estimated_system": 0,
-                    "estimated_user": 0,
-                    "estimated_assistant": 0,
-                    "llm_call_count": 0,
-                    "message_count": 0,
-                    "time_s": 0.0,
-                    "models": set(),
-                    "methods": set(),
-                }
-            acc = aggregated_by_node[node_name]
-            acc["prompt_tokens"] += int(event.get("prompt_tokens") or 0)
-            acc["completion_tokens"] += int(event.get("completion_tokens") or 0)
-            acc["total_tokens"] += int(event.get("total_tokens") or 0)
-            acc["cached_tokens"] += int(event.get("cached_tokens") or 0)
-            acc["estimated_total"] += int(event.get("estimated_total") or 0)
-            acc["estimated_system"] += int(event.get("estimated_system") or 0)
-            acc["estimated_user"] += int(event.get("estimated_user") or 0)
-            acc["estimated_assistant"] += int(event.get("estimated_assistant") or 0)
-            acc["llm_call_count"] += int(event.get("llm_call_count") or 0)
-            acc["message_count"] += int(event.get("message_count") or 0)
-            acc["time_s"] += float(event.get("time_s") or 0.0)
-            model = str(event.get("model") or "").strip()
-            if model:
-                acc["models"].add(model)
-            method = str(event.get("method") or "").strip()
-            if method:
-                acc["methods"].add(method)
-
-    rows: list[tuple[str, dict[str, Any]]] = []
-    if aggregated_by_node:
-        rows = sorted(
-            aggregated_by_node.items(),
-            key=lambda item: _node_order_index.get(item[0], 999),
-        )
-    else:
-        for metric_key, node_name in metric_key_to_node.items():
-            payload = result.get(metric_key)
-            if isinstance(payload, dict) and payload:
-                token_payload = payload.get("tokens")
-                if isinstance(token_payload, dict):
-                    merged_payload = dict(token_payload)
-                    merged_payload["time_s"] = float(payload.get("time_s") or 0.0)
-                    merged_payload["model"] = str(payload.get("model") or "")
-                    rows.append((node_name, merged_payload))
-
-    _print_section("DEBUG Metric Summary")
-    if not rows:
-        print("[dim]No token usage data found in final state.[/dim]")
-        return
-
-    table = Table(show_header=True, header_style="bold bright_white")
-    table.add_column("Node", style="cyan")
-    table.add_column("Model", style="magenta")
-    table.add_column("Token Source", style="yellow")
-    table.add_column("Prompt", justify="right")
-    table.add_column("Completion", justify="right")
-    table.add_column("Total", justify="right")
-    table.add_column("Cached", justify="right")
-    table.add_column("Calls", justify="right")
-    table.add_column("Messages", justify="right")
-    table.add_column("Time (s)", justify="right")
-
-    grand_total = 0
-    for node_name, payload in rows:
-        prompt_tokens = int(payload.get("prompt_tokens") or 0)
-        completion_tokens = int(payload.get("completion_tokens") or 0)
-        total_tokens = int(payload.get("total_tokens") or 0)
-        cached_tokens = int(payload.get("cached_tokens") or 0)
-        llm_call_count = int(
-            payload.get("llm_call_count")
-            or (1 if total_tokens > 0 or int(payload.get("estimated_total") or 0) > 0 else 0)
-        )
-        message_count = int(payload.get("message_count") or 0)
-        time_s = float(payload.get("time_s") or 0.0)
-        models = payload.get("models")
-        if isinstance(models, set):
-            model = ", ".join(sorted(models)) if models else "-"
-        else:
-            model = str(payload.get("model") or "-")
-        methods = payload.get("methods")
-        if isinstance(methods, set):
-            if "provider_reported" in methods:
-                source = "provider_reported"
-            elif methods:
-                source = ",".join(sorted(methods))
-            else:
-                source = "-"
-        else:
-            method = str(payload.get("method") or "").strip()
-            source = method if method else "-"
-        grand_total += total_tokens
-        table.add_row(
-            node_name,
-            model,
-            source,
-            str(prompt_tokens),
-            str(completion_tokens),
-            str(total_tokens),
-            str(cached_tokens),
-            str(llm_call_count),
-            str(message_count),
-            f"{time_s:.3f}",
-        )
-
-    table.add_section()
-    total_time_s = sum(float(payload.get("time_s") or 0.0) for _, payload in rows)
-    table.add_row(
-        "TOTAL",
-        "-",
-        "-",
-        "-",
-        "-",
-        str(grand_total),
-        "-",
-        "-",
-        "-",
-        f"{total_time_s:.3f}",
-    )
-    console.print(table)
-
-
-def _extract_interrupt_payload(result: Any) -> dict[str, Any] | None:
-    # v1 dict-style interrupt envelope
-    if isinstance(result, dict):
-        raw_interrupts = result.get("__interrupt__")
-        if isinstance(raw_interrupts, (list, tuple)) and raw_interrupts:
-            first = raw_interrupts[0]
-            value = getattr(first, "value", None)
-            if isinstance(value, dict):
-                return value
-        return None
-
-    # v2 GraphOutput style
-    raw_interrupts = getattr(result, "interrupts", None)
-    if isinstance(raw_interrupts, (list, tuple)) and raw_interrupts:
-        first = raw_interrupts[0]
-        value = getattr(first, "value", None)
-        if isinstance(value, dict):
-            return value
-    return None
-
-
-def _prompt_interrupt_resume(payload: dict[str, Any]) -> str:
-    mode = payload.get("mode")
-    prompt = payload.get("prompt") or "Approval required."
-    preview = payload.get("preview")
-
-    print("\n[bold yellow]Approval Required[/bold yellow]")
-    print(str(prompt))
-    if isinstance(preview, dict):
-        title = preview.get("title")
-        summary = preview.get("summary")
-        sections = preview.get("sections")
-        if isinstance(title, str) and title:
-            print(f"\n[bold]{title}[/bold]")
-        if isinstance(summary, str) and summary:
-            print(summary)
-        if isinstance(sections, list):
-            for section in sections:
-                if not isinstance(section, dict):
-                    continue
-                label = section.get("label")
-                content = section.get("content")
-                if isinstance(label, str) and isinstance(content, str):
-                    print(f"\n[cyan]{label}:[/cyan]")
-                    if label.strip().lower() == "tool input":
-                        parsed = _try_parse_structured(content)
-                        if isinstance(parsed, (dict, list)):
-                            print(
-                                Panel(
-                                    Syntax(
-                                        json.dumps(parsed, ensure_ascii=False, indent=2, default=str),
-                                        "json",
-                                        word_wrap=True,
-                                    )
-                                )
-                            )
-                            continue
-                    _render_user_facing_value(content, panel_multiline=True)
-
-    options = payload.get("options")
-    if mode == "deterministic" and isinstance(options, list) and options:
-        normalized_options = [str(option).upper() for option in options]
-        return inquirer.select(
-            message="Choose approval action:",
-            choices=[{"name": option, "value": option} for option in normalized_options],
-        ).execute()
-
-    return typer.prompt("Enter response")
-
-
-def _try_parse_structured(value: Any) -> Any:
-    if isinstance(value, (dict, list)):
-        return value
-    if not isinstance(value, str):
-        return None
-
-    stripped = value.strip()
-    if not stripped:
-        return None
-    if stripped[0] not in "{[":
-        return None
-
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        return None
-
-    if isinstance(parsed, (dict, list)):
-        return parsed
-    return None
-
-
-def _render_dict_table(data: dict[str, Any]) -> None:
-    table = Table(show_header=True, header_style="bold bright_white", expand=True)
-    table.add_column("Key", style="cyan", no_wrap=True)
-    table.add_column("Value")
-    for key, value in data.items():
-        if isinstance(value, (dict, list)):
-            value_text = json.dumps(value, ensure_ascii=False, indent=2, default=str)
-        else:
-            value_text = str(value)
-        table.add_row(str(key), value_text)
-    print(table)
-
-
-def _render_list_table(data: list[Any]) -> bool:
-    if not data:
-        print("[]")
-        return True
-    if not all(isinstance(item, dict) for item in data):
-        return False
-
-    dict_rows = [item for item in data if isinstance(item, dict)]
-    headers: list[str] = []
-    seen: set[str] = set()
-    for row in dict_rows:
-        for key in row.keys():
-            key_str = str(key)
-            if key_str not in seen:
-                seen.add(key_str)
-                headers.append(key_str)
-
-    if not headers:
-        return False
-
-    table = Table(show_header=True, header_style="bold bright_white", expand=True)
-    for header in headers:
-        table.add_column(header)
-
-    for row in dict_rows:
-        rendered_row: list[str] = []
-        for header in headers:
-            value = row.get(header)
-            if isinstance(value, (dict, list)):
-                rendered_row.append(json.dumps(value, ensure_ascii=False, default=str))
-            elif value is None:
-                rendered_row.append("")
-            else:
-                rendered_row.append(str(value))
-        table.add_row(*rendered_row)
-
-    print(table)
-    return True
-
-
-def _render_user_facing_value(value: Any, *, panel_multiline: bool = False) -> None:
-    parsed = _try_parse_structured(value)
-    if isinstance(parsed, dict):
-        _render_dict_table(parsed)
-        return
-    if isinstance(parsed, list):
-        if _render_list_table(parsed):
-            return
-        print(Panel(json.dumps(parsed, ensure_ascii=False, indent=2, default=str)))
-        return
-
-    if panel_multiline and isinstance(value, str) and "\n" in value:
-        print(Panel(Markdown(value)))
-        return
-
-    if isinstance(value, str):
-        console.print(Markdown(value))
-        return
-
-    print("" if value is None else str(value))

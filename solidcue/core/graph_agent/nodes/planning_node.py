@@ -7,9 +7,8 @@ from typing import Any
 from solidcue.agent_configs.loader import load_agent, load_agent_skill, load_agent_tools
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
-from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
+from solidcue.core.utils.metrics import build_metric_state_delta, timed_async_stream_generate
 from solidcue.core.graph_agent.prompts.planning_prompt import build_planning_messages
-from solidcue.services.chat_history_service import load_chat_history
 
 logger = logging.getLogger(__name__)
 _VAGUE_REQUIRES = {"data", "details", "information", "context", "output", "done"}
@@ -103,7 +102,7 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _llm_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+async def _llm_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Call LLM to generate a task plan from user input.
 
     Returns a list of tasks with type, description, requires, and status.
@@ -123,9 +122,9 @@ def _llm_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             skill_guidance=load_agent_skill(agent_key),
             tools_guidance=load_agent_tools(agent_key),
             metadata=state.get("metadata") if isinstance(state.get("metadata"), dict) else {},
-            chat_history=load_chat_history(conversation_id, limit=12),
+            chat_history=state.get("chat_history") or [],
         )
-        response_text, metric_stats = timed_generate(provider, messages, node_name="planning")
+        response_text, metric_stats = await timed_async_stream_generate(provider, messages, node_name="planning")
         logger.debug("planning LLM raw response (type=%s): %s", type(response_text).__name__, repr(response_text)[:500])
 
         parsed = _extract_json_object(str(response_text or ""))
@@ -428,7 +427,7 @@ def _apply_planning_guardrails(
     return with_item_keys
 
 
-def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+async def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Build raw task plan (pre-guardrails) and planning metrics."""
     user_input = state.get("user_input", "")
     if not user_input.strip():
@@ -445,16 +444,16 @@ def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str, Any]]
             {},
         )
 
-    task_plan, metric_planning = _llm_plan(state)
+    task_plan, metric_planning = await _llm_plan(state)
     if not task_plan:
         task_plan = _fallback_task_plan(state)
     return task_plan, metric_planning
 
 
-def planning_node(state: AgentState) -> dict[str, Any]:
+async def planning_node(state: AgentState) -> dict[str, Any]:
     """Generate a structured task plan for downstream execution."""
     # Phase 1: build raw task plan from input/model.
-    raw_task_plan, metric_planning = _build_task_plan_from_input(state)
+    raw_task_plan, metric_planning = await _build_task_plan_from_input(state)
     # Phase 2: normalize plan into canonical runtime shape.
     task_plan = _apply_planning_guardrails(
         raw_task_plan,

@@ -9,7 +9,7 @@ from solidcue.agent_configs.loader import load_agent
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.services.hhem_service import get_hhem_model, HHEM_MODEL_ID
 from solidcue.core.graph_agent.state.schema import AgentState
-from solidcue.core.utils.metrics import build_metric, build_metric_state_delta, timed_generate
+from solidcue.core.utils.metrics import build_metric, build_metric_state_delta, timed_async_stream_generate
 from solidcue.core.graph_agent.prompts.validation_hhem_prompt import build_hhem_verify_messages
 
 """
@@ -275,7 +275,7 @@ def _build_premise(state: AgentState) -> str:
     return ""
 
 
-def _llm_verify_failures(
+async def _llm_verify_failures(
     state: AgentState, failed_claims: list[dict[str, Any]], premise: str
 ) -> tuple[list[str], str, dict[str, Any]]:
     import json
@@ -294,7 +294,7 @@ def _llm_verify_failures(
     claims_text = "\n".join(f'- "{c["claim"]}" (score: {c["score"]:.2f})' for c in claims_to_verify)
     messages = build_hhem_verify_messages(claims_text)
 
-    raw_output, metric = timed_generate(
+    raw_output, metric = await timed_async_stream_generate(
         provider,
         messages,
         node_name="validation_hhem",
@@ -316,7 +316,7 @@ def _llm_verify_failures(
     return [c["claim"] for c in failed_claims], "LLM verification failed to parse.", metric
 
 
-def validation_hhem_node(state: AgentState) -> dict[str, Any]:
+async def validation_hhem_node(state: AgentState) -> dict[str, Any]:
     """
     Scores draft groundedness using a heavily optimized short-circuiting local HHEM matrix,
     falling back to an LLM verification layer for anomalies.
@@ -364,7 +364,7 @@ def validation_hhem_node(state: AgentState) -> dict[str, Any]:
             **build_metric_state_delta("validation_hhem", "metric_validation_hhem", metric),
         }
 
-    real_failures, llm_reason, llm_metric = _llm_verify_failures(state, failed_claims, premise)
+    real_failures, llm_reason, llm_metric = await _llm_verify_failures(state, failed_claims, premise)
     llm_time = float(llm_metric.get("time_s") or 0.0) if isinstance(llm_metric, dict) else 0.0
     llm_tokens = llm_metric.get("tokens") if isinstance(llm_metric, dict) else {}
     total_time = hhem_elapsed + llm_time

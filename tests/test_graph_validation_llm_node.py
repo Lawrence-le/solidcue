@@ -1,4 +1,7 @@
 import importlib as _il; validation_module = _il.import_module("solidcue.core.graph_agent.nodes.validation_llm_node")
+
+import pytest
+
 from solidcue.core.graph_agent.nodes.validation_llm_node import validation_llm_node as validation_node
 from solidcue.core.graph_agent.prompts.validation_llm_system_prompt import build_validation_llm_system_prompt
 
@@ -17,21 +20,14 @@ def test_validation_prompt_explains_validation_evidence() -> None:
     assert "does not fabricate details absent from evidence" in prompt
 
 
-def test_graph_validation_emits_bad_synthesis_when_validator_fails_in_synthesis(monkeypatch) -> None:
-    monkeypatch.setattr(
-        validation_module,
-        "_llm_validate",
-        lambda state, draft_output: (
-            {
-                "passed": False,
-                "reason": "The draft does not include required details from context.",
-                "score": 0.0,
-            },
-            {},
-        ),
-    )
+@pytest.mark.asyncio
+async def test_graph_validation_emits_bad_synthesis_when_validator_fails_in_synthesis(monkeypatch) -> None:
+    async def _fake_validate(state, draft_output):
+        return {"passed": False, "reason": "The draft does not include required details from context.", "score": 0.0}, {}
 
-    result = validation_node(
+    monkeypatch.setattr(validation_module, "_llm_validate", _fake_validate)
+
+    result = await validation_node(
         {
             "user_input": "Generate a resume document from this job posting",
             "tool_call_history": [{"tool_name": "search_web", "tool_input": {"query": "job post"}}],
@@ -47,21 +43,14 @@ def test_graph_validation_emits_bad_synthesis_when_validator_fails_in_synthesis(
     assert "attempt" not in result
 
 
-def test_graph_validation_emits_bad_synthesis_when_validator_fails_in_artifact_phase(monkeypatch) -> None:
-    monkeypatch.setattr(
-        validation_module,
-        "_llm_validate",
-        lambda state, draft_output: (
-            {
-                "passed": False,
-                "reason": "Artifact content is incomplete.",
-                "score": 0.2,
-            },
-            {},
-        ),
-    )
+@pytest.mark.asyncio
+async def test_graph_validation_emits_bad_synthesis_when_validator_fails_in_artifact_phase(monkeypatch) -> None:
+    async def _fake_validate(state, draft_output):
+        return {"passed": False, "reason": "Artifact content is incomplete.", "score": 0.2}, {}
 
-    result = validation_node(
+    monkeypatch.setattr(validation_module, "_llm_validate", _fake_validate)
+
+    result = await validation_node(
         {
             "user_input": "Generate a resume",
             "phase": "artifact",
@@ -73,8 +62,9 @@ def test_graph_validation_emits_bad_synthesis_when_validator_fails_in_artifact_p
     assert "incomplete" in result["validation_report"]["reason"].lower()
 
 
-def test_graph_validation_emits_bad_synthesis_when_artifact_execution_failed() -> None:
-    result = validation_node(
+@pytest.mark.asyncio
+async def test_graph_validation_emits_bad_synthesis_when_artifact_execution_failed() -> None:
+    result = await validation_node(
         {
             "user_input": "Generate a resume",
             "phase": "artifact",
@@ -86,14 +76,14 @@ def test_graph_validation_emits_bad_synthesis_when_artifact_execution_failed() -
     assert "draft output must be a string" in result["validation_report"]["reason"].lower()
 
 
-def test_graph_validation_emits_null_failure_type_when_passed(monkeypatch) -> None:
-    monkeypatch.setattr(
-        validation_module,
-        "_llm_validate",
-        lambda state, draft_output: ({"passed": True, "reason": "ok", "score": 1.0}, {}),
-    )
+@pytest.mark.asyncio
+async def test_graph_validation_emits_null_failure_type_when_passed(monkeypatch) -> None:
+    async def _fake_validate(state, draft_output):
+        return {"passed": True, "reason": "ok", "score": 1.0}, {}
 
-    result = validation_node(
+    monkeypatch.setattr(validation_module, "_llm_validate", _fake_validate)
+
+    result = await validation_node(
         {
             "user_input": "What is a queue in data structures?",
             "tool_call_history": [],
@@ -107,8 +97,9 @@ def test_graph_validation_emits_null_failure_type_when_passed(monkeypatch) -> No
     assert "finalization_reason" not in result
 
 
-def test_graph_validation_emits_bad_synthesis_for_empty_draft() -> None:
-    result = validation_node(
+@pytest.mark.asyncio
+async def test_graph_validation_emits_bad_synthesis_for_empty_draft() -> None:
+    result = await validation_node(
         {
             "user_input": "Tell me about queues",
             "synthesis_draft": "   ",
@@ -119,8 +110,9 @@ def test_graph_validation_emits_bad_synthesis_for_empty_draft() -> None:
     assert "empty" in result["validation_report"]["reason"].lower()
 
 
-def test_graph_validation_emits_bad_synthesis_for_control_token_leak() -> None:
-    result = validation_node(
+@pytest.mark.asyncio
+async def test_graph_validation_emits_bad_synthesis_for_control_token_leak() -> None:
+    result = await validation_node(
         {
             "user_input": "Tell me about queues",
             "synthesis_draft": "Here is the answer<|channel|>analysis<|message|>leak",
@@ -131,17 +123,14 @@ def test_graph_validation_emits_bad_synthesis_for_control_token_leak() -> None:
     assert "control tokens" in result["validation_report"]["reason"]
 
 
-def test_graph_validation_includes_metric_validation_field(monkeypatch) -> None:
-    monkeypatch.setattr(
-        validation_module,
-        "_llm_validate",
-        lambda state, draft_output: (
-            {"passed": True, "reason": "ok", "score": 1.0},
-            {"estimated_total": 42, "estimated_system": 10, "estimated_user": 28, "message_count": 2},
-        ),
-    )
+@pytest.mark.asyncio
+async def test_graph_validation_includes_metric_validation_field(monkeypatch) -> None:
+    async def _fake_validate(state, draft_output):
+        return {"passed": True, "reason": "ok", "score": 1.0}, {"estimated_total": 42, "estimated_system": 10, "estimated_user": 28, "message_count": 2}
 
-    result = validation_node(
+    monkeypatch.setattr(validation_module, "_llm_validate", _fake_validate)
+
+    result = await validation_node(
         {
             "user_input": "Tell me about queues",
             "synthesis_draft": "A queue is FIFO.",
@@ -152,7 +141,8 @@ def test_graph_validation_includes_metric_validation_field(monkeypatch) -> None:
     assert isinstance(result["metric_validation"], dict)
 
 
-def test_llm_validation_uses_handoff_scoped_evidence(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_llm_validation_uses_handoff_scoped_evidence(monkeypatch) -> None:
     captured = {}
 
     monkeypatch.setattr(validation_module, "load_agent", lambda _: object())
@@ -163,13 +153,17 @@ def test_llm_validation_uses_handoff_scoped_evidence(monkeypatch) -> None:
         return [{"role": "user", "content": "validate"}]
 
     monkeypatch.setattr(validation_module, "build_validation_messages", fake_build_validation_messages)
+
+    async def fake_timed_async_stream_generate(_provider, _messages, **_kwargs):
+        return '{"passed": true, "reason": "ok", "score": 1.0}', {}
+
     monkeypatch.setattr(
         validation_module,
-        "timed_generate",
-        lambda _provider, _messages, **_kwargs: ('{"passed": true, "reason": "ok", "score": 1.0}', {}),
+        "timed_async_stream_generate",
+        fake_timed_async_stream_generate,
     )
 
-    result = validation_node(
+    result = await validation_node(
         {
             "agent_key": "x",
             "user_input": "Create a resume",

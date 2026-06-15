@@ -115,7 +115,13 @@ def _passthrough_final_output_node(_state: AgentState) -> dict[str, Any]:
     return {}
 
 
-def _compile_graph(checkpointer: Any, *, streaming_final_output: bool = False) -> Any:
+def _compile_graph(
+    checkpointer: Any,
+    *,
+    streaming_final_output: bool = False,
+    session_id: str | None = None,
+    include_langfuse_callbacks: bool = True,
+) -> Any:
     """Build and compile the agent StateGraph with the given checkpointer."""
     graph = StateGraph(AgentState)
 
@@ -151,7 +157,21 @@ def _compile_graph(checkpointer: Any, *, streaming_final_output: bool = False) -
     graph.add_edge("final_output", END)
 
     compiled = graph.compile(checkpointer=checkpointer)
-    return compiled.with_config({"recursion_limit": _resolve_recursion_limit()})
+    cfg: dict[str, Any] = {"recursion_limit": _resolve_recursion_limit()}
+    if session_id:
+        # CallbackHandler reads metadata["langfuse_session_id"] on the root chain
+        # start event and groups all observations under one Langfuse session.
+        cfg["metadata"] = {
+            "langfuse_session_id": session_id,
+            "langfuse_trace_name": "solidcue:agent",
+        }
+    if include_langfuse_callbacks:
+        from solidcue.observability.langfuse import get_langfuse_callbacks
+
+        callbacks = get_langfuse_callbacks()
+        if callbacks:
+            cfg["callbacks"] = callbacks
+    return compiled.with_config(cfg)
 
 
 async def build_async_agent_graph(*, streaming_final_output: bool = False) -> Any:
@@ -163,3 +183,31 @@ async def build_async_agent_graph(*, streaming_final_output: bool = False) -> An
 def build_agent_graph(*, streaming_final_output: bool = False) -> Any:
     """Build the agent graph with the sync checkpointer (non-streaming paths)."""
     return _compile_graph(_build_checkpointer(), streaming_final_output=streaming_final_output)
+
+
+async def build_for_server(config: Any) -> Any:
+    """LangGraph Server graph factory. Called per-run with the merged run config.
+
+    The server injects its own checkpointer; we compile without one.
+    agent_key is validated against the registry here; it also flows through
+    AgentState at run time so nodes can load their per-agent configuration.
+
+    config["configurable"]["agent_key"] is populated from the assistant's saved
+    config, merged with any per-run overrides.
+    """
+    from langchain_core.runnables import RunnableConfig  # local to avoid circular at module load
+
+    cfg: RunnableConfig = config  # type: ignore[assignment]
+    configurable = cfg.get("configurable") or {}
+    agent_key = configurable.get("agent_key")
+    if not agent_key:
+        raise ValueError(
+            "config['configurable']['agent_key'] is required. "
+            "Create an assistant with config={'configurable': {'agent_key': '<key>'}}."
+        )
+    from solidcue.agent_configs.loader import load_agent
+
+    load_agent(agent_key)  # raises FileNotFoundError / ValueError if not registered
+
+    thread_id: str | None = configurable.get("thread_id") or None
+    return _compile_graph(checkpointer=None, session_id=thread_id)

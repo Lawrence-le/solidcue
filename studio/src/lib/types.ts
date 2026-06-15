@@ -200,6 +200,40 @@ export type StreamEvent =
         agent_thread_id: string;
       };
     }
+  | {
+      event: "plan";
+      data: {
+        thread_id: string;
+        conversation_id?: string;
+        intro: string;
+        route_reason: string;
+        step_count: number;
+        steps: { agent_key: string; sub_task: string; step_index: number }[];
+      };
+    }
+  | {
+      event: "subagent";
+      data: {
+        thread_id: string;
+        conversation_id?: string;
+        agent_key: string;
+        agent_thread_id: string;
+        sub_task: string;
+        step_index: number;
+        step_count: number;
+        status: "running" | "completed" | "failed" | "interrupted";
+        output?: string;
+      };
+    }
+  | {
+      event: "subagent_delta";
+      data: {
+        thread_id: string;
+        agent_key: string;
+        step_index: number;
+        delta: string;
+      };
+    }
   | { event: "interrupt"; data: { thread_id: string; interrupt: InterruptPayload } }
   | {
       event: "completed";

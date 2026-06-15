@@ -5,7 +5,7 @@ from typing import Any
 from solidcue.agent_configs.loader import load_agent
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
-from solidcue.core.utils.metrics import build_metric, build_metric_state_delta, timed_generate
+from solidcue.core.utils.metrics import build_metric, build_metric_state_delta, timed_async_stream_generate
 from solidcue.core.graph_agent.prompts.reflection_prompt import build_reflection_messages
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ Main entrypoint:
 """
 
 
-def _llm_check_requires_met(
+async def _llm_check_requires_met(
     requires: list[str],
     execution_result: Any,
     agent_key: str,
@@ -61,7 +61,7 @@ def _llm_check_requires_met(
             requires=requires,
             execution_result=result_str,
         )
-        response, metric = timed_generate(provider, messages, node_name="reflection")
+        response, metric = await timed_async_stream_generate(provider, messages, node_name="reflection")
         token_stats = dict(metric.get("tokens") or {})
         token_stats["time_s"] = float(metric.get("time_s") or 0.0)
         token_stats["model"] = str(metric.get("model") or "")
@@ -104,7 +104,7 @@ def _llm_check_requires_met(
         return [f"{req.strip()}_met" for req in requires if isinstance(req, str) and req.strip()], {}
 
 
-def _check_requires_satisfied(
+async def _check_requires_satisfied(
     requires: list[str],
     execution_result: Any,
     agent_key: str = None,
@@ -153,7 +153,7 @@ def _check_requires_satisfied(
 
     # 3. Different tool used — let LLM check if it semantically satisfies the requirements
     if agent_key:
-        return _llm_check_requires_met(requires, execution_result, agent_key, tool_name)
+        return await _llm_check_requires_met(requires, execution_result, agent_key, tool_name)
 
     # Fallback: if execution succeeded and no agent_key, assume all met
     for req in requires:
@@ -263,7 +263,7 @@ def _merge_token_stats(*stats_list: dict[str, Any]) -> dict[str, Any]:
     else:
         merged["method"] = "mixed_fallback"
     return merged
-def reflection_node(state: AgentState) -> dict[str, Any]:
+async def reflection_node(state: AgentState) -> dict[str, Any]:
     """
     Evaluate the latest tool execution for the current task and write normalized state updates.
 
@@ -328,7 +328,7 @@ def reflection_node(state: AgentState) -> dict[str, Any]:
     accomplishments: list[str] = []
     requires_token_stats: dict[str, Any] = {}
     if task_requires:
-        accomplishments, requires_token_stats = _check_requires_satisfied(
+        accomplishments, requires_token_stats = await _check_requires_satisfied(
             task_requires,
             execution_result,
             agent_key,

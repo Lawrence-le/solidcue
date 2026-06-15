@@ -49,7 +49,7 @@ def test_router_missing_source_retry_reason_includes_latest_task_failure_detail(
     )
 
     retry_reason = result.get("retry_reason", "")
-    assert "MISSING_ACTION: Previous tool call failed: Google API failed: HTTP 404 File not found" in retry_reason
+    assert "Previous tool call failed: Google API failed: HTTP 404 File not found" in retry_reason
 
 
 def test_router_missing_source_uses_current_task_failure_detail_only() -> None:
@@ -268,8 +268,8 @@ def test_router_does_not_inspect_router_origin_or_reflection_result() -> None:
     assert result["source_attempt"] == 1
 
 
-def test_router_keeps_source_gathering_when_llm_says_incomplete() -> None:
-    """Router should stay in source phase when LLM task completion check returns False."""
+def test_router_keeps_source_gathering_when_accomplishments_incomplete() -> None:
+    """Router should stay in source phase when required accomplishments are not yet met."""
     state = {
         "phase": "source",
         "failure_type": None,
@@ -284,19 +284,19 @@ def test_router_keeps_source_gathering_when_llm_says_incomplete() -> None:
             }
         ],
         "agent_key": "resume_builder",
+        # No tool_call_history with accomplishments — task is incomplete.
+        "tool_call_history": [],
     }
 
-    # LLM says task is not yet complete
-    with patch("solidcue.core.graph_agent.nodes.router_node._llm_task_complete", return_value=(False, [], ["profile_data", "experience_data"], "Read the listed files using drive_read_file.")):
-        result = router_node(state)
+    result = router_node(state)
 
     assert result["phase"] == "source"
     assert result["current_task"] == "task_1"
     assert result["router_next"] == "decision"
 
 
-def test_router_advances_to_next_task_when_llm_says_complete() -> None:
-    """Router should advance current_task and mark prior task completed when LLM returns True."""
+def test_router_advances_to_next_task_when_accomplishments_complete() -> None:
+    """Router should advance current_task when all required accomplishments are met."""
     state = {
         "phase": "source",
         "failure_type": None,
@@ -318,15 +318,24 @@ def test_router_advances_to_next_task_when_llm_says_complete() -> None:
             },
         ],
         "agent_key": "resume_builder",
+        "tool_call_history": [
+            {
+                "task_id": "task_1",
+                "tool_name": "drive_read_file",
+                "tool_input": {"path": "profile.md"},
+                "success": True,
+                "accomplishments": ["profile_data_met"],
+            }
+        ],
     }
 
-    with patch("solidcue.core.graph_agent.nodes.router_node._llm_task_complete", return_value=(True, ["profile_data"], [], "")):
-        result = router_node(state)
+    result = router_node(state)
 
     assert result["current_task"] == "task_2"
 
 
 def test_router_artifact_completion_uses_task_scoped_tool_history() -> None:
+    """Router should mark artifact phase final when all accomplishments for current task are met."""
     state = {
         "phase": "artifact",
         "failure_type": None,
@@ -337,50 +346,45 @@ def test_router_artifact_completion_uses_task_scoped_tool_history() -> None:
                 "id": "task_4",
                 "type": "artifact_generation",
                 "description": "Create and upload resume doc",
-                "requires": ["formatted document", "upload confirmation"],
+                "requires": ["formatted_document", "upload_confirmation"],
                 "status": "pending",
             }
         ],
         "tool_call_history": [
+            # task_3 entry should NOT count toward task_4 completion
             {
                 "task_id": "task_3",
                 "tool_name": "create_formatted_word_document_base64",
                 "tool_input": {"content": "x"},
                 "success": True,
-                "execution_result": {
-                    "success": True,
-                    "type": "tool_execution",
-                    "content": {"content_base64": "abc"},
-                    "error": None,
-                },
+                "accomplishments": ["formatted_document_met"],
+            },
+            # task_4 entries supply the required accomplishments
+            {
+                "task_id": "task_4",
+                "tool_name": "create_formatted_word_document_base64",
+                "tool_input": {"content": "x"},
+                "success": True,
+                "accomplishments": ["formatted_document_met"],
             },
             {
                 "task_id": "task_4",
                 "tool_name": "drive_upload_file",
                 "tool_input": {"name": "resume.docx"},
                 "success": True,
-                "execution_result": {
-                    "success": True,
-                    "type": "tool_execution",
-                    "content": {"file_id": "f123", "webViewLink": "https://docs.google.com/..."},
-                    "error": None,
-                },
+                "accomplishments": ["upload_confirmation_met"],
             },
         ],
     }
 
-    with patch(
-        "solidcue.core.graph_agent.nodes.router_node._llm_artifact_task_complete",
-        return_value=(True, ["formatted document", "upload confirmation"], [], ""),
-    ):
-        result = router_node(state)
+    result = router_node(state)
 
     assert result["phase"] == "final"
     assert result["router_next"] == "final_output"
 
 
-def test_router_skips_llm_check_when_task_already_completed() -> None:
-    """Router should skip LLM call and advance immediately when task status is 'completed'."""
+def test_router_skips_accomplishment_check_when_task_already_completed() -> None:
+    """Router should advance immediately when task status is 'completed' without checking accomplishments."""
     state = {
         "phase": "source",
         "failure_type": None,
@@ -391,7 +395,7 @@ def test_router_skips_llm_check_when_task_already_completed() -> None:
                 "type": "source_gathering",
                 "description": "Gather sources",
                 "requires": ["profile_data"],
-                "status": "completed",  # already done
+                "status": "completed",  # already done — no accomplishments needed
             },
             {
                 "id": "task_2",
@@ -401,11 +405,10 @@ def test_router_skips_llm_check_when_task_already_completed() -> None:
                 "status": "pending",
             },
         ],
+        "tool_call_history": [],  # deliberately empty — status=completed bypasses check
     }
 
-    with patch("solidcue.core.graph_agent.nodes.router_node._llm_task_complete") as mock_llm:
-        result = router_node(state)
-        mock_llm.assert_not_called()
+    result = router_node(state)
 
     assert result["current_task"] == "task_2"
     assert result["router_next"] == "synthesis"

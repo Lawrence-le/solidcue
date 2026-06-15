@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from pydantic import BaseModel
 
 from solidcue.api.schemas import (
     ConversationMetadataResponse,
     RunStatusResponse,
     StateSnapshotResponse,
+)
+from solidcue.services.lg_client import (
+    get_lg_client,
+    get_lg_thread_by_conversation,
+    get_lg_thread_status,
 )
 from solidcue.services.state_snapshot_service import (
     build_live_state_snapshot,
@@ -29,7 +32,7 @@ from solidcue.services.state_snapshot_service import (
     load_live_state_for_conversation,
     resolve_checkpoint_db_path,
 )
-from solidcue.services.run_engine import get_thread_run_status, is_thread_resumable
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/state", tags=["state"])
 
@@ -56,71 +59,31 @@ class ConversationSummary(BaseModel):
 
 
 @router.get("/threads", response_model=list[ThreadSummary])
-def list_threads() -> list[ThreadSummary]:
-    """Return recent thread summaries from the checkpoint DB.
-
-    Reads agent_key and step count directly from the metadata JSON column
-    without loading full LangGraph state, so this is fast for large DBs.
-    """
-    db_path = resolve_checkpoint_db_path()
-    if not db_path.exists():
-        return []
+async def list_threads() -> list[ThreadSummary]:
+    """Return recent thread summaries from the LangGraph Server."""
     try:
-        conn = _connect_checkpoint_db()
-        cur = conn.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'checkpoints'")
-        if cur.fetchone() is None:
-            conn.close()
-            return []
-        cur.execute(
-            """
-            WITH ranked AS (
-                SELECT
-                    COALESCE(NULLIF(json_extract(metadata, '$.conversation_id'), ''), thread_id) AS conversation_id,
-                    thread_id,
-                    json_extract(metadata, '$.agent_key') AS agent_key,
-                    COALESCE(json_extract(metadata, '$.step'), 0) AS step_count,
-                    rowid,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY COALESCE(NULLIF(json_extract(metadata, '$.conversation_id'), ''), thread_id)
-                        ORDER BY rowid DESC
-                    ) AS rn
-                FROM checkpoints
-                WHERE checkpoint_ns = ''
-            ),
-            aggregated AS (
-                SELECT
-                    conversation_id,
-                    MAX(step_count) AS max_step,
-                    MAX(rowid) AS latest_rowid
-                FROM ranked
-                GROUP BY conversation_id
+        client = get_lg_client()
+        # Search all threads; filter out internal worker threads.
+        results = await client.threads.search(limit=100)
+        summaries = []
+        for thread in results:
+            thread_id = thread.get("thread_id") if isinstance(thread, dict) else getattr(thread, "thread_id", None)
+            metadata = thread.get("metadata") if isinstance(thread, dict) else getattr(thread, "metadata", None)
+            if not thread_id:
+                continue
+            conversation_id = (metadata or {}).get("conversation_id") or thread_id
+            # Skip internal orchestration worker threads.
+            if "::worker::" in conversation_id:
+                continue
+            summaries.append(
+                ThreadSummary(
+                    conversation_id=conversation_id,
+                    thread_id=thread_id,
+                    agent_key=None,
+                    step_count=0,
+                )
             )
-            SELECT
-                ranked.conversation_id,
-                ranked.thread_id,
-                ranked.agent_key,
-                aggregated.max_step
-            FROM ranked
-            JOIN aggregated
-              ON aggregated.conversation_id = ranked.conversation_id
-             AND aggregated.latest_rowid = ranked.rowid
-            WHERE ranked.rn = 1
-            ORDER BY ranked.rowid DESC
-            """,
-            (),
-        )
-        rows = cur.fetchall()
-        conn.close()
-        return [
-            ThreadSummary(
-                conversation_id=row[0],
-                thread_id=row[1],
-                agent_key=row[2] or None,
-                step_count=int(row[3]) if row[3] is not None else 0,
-            )
-            for row in rows
-        ]
+        return summaries
     except Exception:
         return []
 
@@ -219,16 +182,18 @@ async def live_conversation_snapshot(
 
 
 @router.get("/conversations/{conversation_id}/snapshot", response_model=StateSnapshotResponse)
-def conversation_snapshot(conversation_id: str) -> StateSnapshotResponse:
-    state = load_conversation_snapshot(conversation_id)
+async def conversation_snapshot(conversation_id: str) -> StateSnapshotResponse:
+    state = await load_conversation_snapshot(conversation_id)
     thread_id = state.get("last_thread_id") if isinstance(state.get("last_thread_id"), str) else None
     return StateSnapshotResponse(thread_id=thread_id, state=state)
 
 
 @router.get("/resumable/{thread_id}")
 async def thread_resumable(thread_id: str) -> dict:
-    """Return whether a thread has unfinished execution that can be continued."""
-    return await is_thread_resumable(thread_id)
+    """Return whether a LangGraph Server thread is in an interrupted/resumable state."""
+    thread_status = await get_lg_thread_status(thread_id)
+    resumable = thread_status in ("interrupted", "busy")
+    return {"resumable": resumable, "next_nodes": [], "thread_id": thread_id}
 
 
 @router.get("/conversations/{conversation_id}/resumable")
@@ -249,36 +214,34 @@ async def conversation_interrupt(conversation_id: str) -> dict:
 
 
 @router.get("/conversations/{conversation_id}/runs", response_model=RunStatusResponse)
-def conversation_run_status(conversation_id: str) -> RunStatusResponse:
-    thread_id = get_latest_thread_id_for_conversation(conversation_id)
-    payload = get_thread_run_status(thread_id) if thread_id else {
-        "thread_id": None,
-        "run_id": None,
-        "agent_key": None,
-        "status": "idle",
-        "error": None,
-        "updated_at": None,
-    }
+async def conversation_run_status(conversation_id: str) -> RunStatusResponse:
+    lg_thread = await get_lg_thread_by_conversation(conversation_id)
+    if lg_thread:
+        lg_thread_id = lg_thread.get("thread_id", "")
+        status = await get_lg_thread_status(lg_thread_id)
+    else:
+        lg_thread_id = None
+        status = "idle"
     return RunStatusResponse(
-        thread_id=payload.get("thread_id") if isinstance(payload.get("thread_id"), str) else conversation_id,
-        run_id=payload.get("run_id") if isinstance(payload.get("run_id"), str) else None,
-        agent_key=payload.get("agent_key") if isinstance(payload.get("agent_key"), str) else None,
-        status=str(payload.get("status") or "idle"),
-        error=payload.get("error") if isinstance(payload.get("error"), str) else None,
-        updated_at=payload.get("updated_at") if isinstance(payload.get("updated_at"), str) else None,
+        thread_id=lg_thread_id or conversation_id,
+        run_id=None,
+        agent_key=None,
+        status=status,
+        error=None,
+        updated_at=None,
     )
 
 
 @router.get("/runs/{thread_id}", response_model=RunStatusResponse)
-def run_status(thread_id: str) -> RunStatusResponse:
-    payload = get_thread_run_status(thread_id)
+async def run_status(thread_id: str) -> RunStatusResponse:
+    status = await get_lg_thread_status(thread_id)
     return RunStatusResponse(
         thread_id=thread_id,
-        run_id=payload.get("run_id") if isinstance(payload.get("run_id"), str) else None,
-        agent_key=payload.get("agent_key") if isinstance(payload.get("agent_key"), str) else None,
-        status=str(payload.get("status") or "idle"),
-        error=payload.get("error") if isinstance(payload.get("error"), str) else None,
-        updated_at=payload.get("updated_at") if isinstance(payload.get("updated_at"), str) else None,
+        run_id=None,
+        agent_key=None,
+        status=status,
+        error=None,
+        updated_at=None,
     )
 
 
@@ -291,8 +254,8 @@ def delete_thread(thread_id: str) -> Response:
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204)
-def delete_conversation(conversation_id: str) -> Response:
-    deleted = delete_conversation_state(conversation_id)
+async def delete_conversation(conversation_id: str) -> Response:
+    deleted = await delete_conversation_state(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Conversation not found: {conversation_id}")
     return Response(status_code=204)

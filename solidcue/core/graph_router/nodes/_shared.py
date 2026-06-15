@@ -9,6 +9,21 @@ from solidcue.providers.factory import get_provider_from_any_config
 _RUNTIME_ROUTER_PROVIDER_CONFIGS: dict[str, Any] = {}
 
 
+def _load_profile_provider() -> Any:
+    """Load the user's router provider at import time — never inside async nodes."""
+    try:
+        from solidcue.user.loader import load_user_profile
+
+        cfg = load_user_profile().router_provider
+        return get_provider_from_any_config(cfg) if cfg is not None else None
+    except Exception:
+        return None
+
+
+# Loaded once so async nodes never block on file IO.
+_PROFILE_ROUTER_PROVIDER: Any = _load_profile_provider()
+
+
 def normalize_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 

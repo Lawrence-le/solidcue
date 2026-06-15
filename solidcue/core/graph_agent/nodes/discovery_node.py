@@ -8,8 +8,7 @@ from typing import Any
 from solidcue.agent_configs.loader import load_agent, load_agent_persona, load_agent_skill, load_agent_tools
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
-from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
-from solidcue.services.chat_history_service import load_chat_history
+from solidcue.core.utils.metrics import build_metric_state_delta, timed_async_stream_generate
 
 """
 Discovery Node - Function Overview
@@ -61,7 +60,7 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 # Section: LLM extraction helper
 # ---------------------------------------------------------------------------
 
-def _extract_paths_with_llm(
+async def _extract_paths_with_llm(
     agent_key: str,
     skill_text: str,
     tools_text: str,
@@ -101,7 +100,7 @@ def _extract_paths_with_llm(
     ]
 
     try:
-        raw_output, metric_discovery = timed_generate(provider, messages, node_name="discovery")
+        raw_output, metric_discovery = await timed_async_stream_generate(provider, messages, node_name="discovery")
     except Exception:
         return [], [], [], [], {}
 
@@ -211,7 +210,7 @@ def _build_target_artifacts_source(user_input: str, chat_history: list[dict[str,
 # ---------------------------------------------------------------------------
 
 
-def discovery_node(state: AgentState) -> dict[str, Any]:
+async def discovery_node(state: AgentState) -> dict[str, Any]:
     # Phase 1: validate required state.
     agent_key = state.get("agent_key")
     if not isinstance(agent_key, str) or not agent_key:
@@ -234,7 +233,7 @@ def discovery_node(state: AgentState) -> dict[str, Any]:
         tools_text = ""
 
     # Phase 3: extract path hints using discovery model call.
-    source_paths, output_paths, source_filenames, output_filenames, metric_discovery = _extract_paths_with_llm(
+    source_paths, output_paths, source_filenames, output_filenames, metric_discovery = await _extract_paths_with_llm(
         agent_key,
         skill_text,
         tools_text,
@@ -243,7 +242,7 @@ def discovery_node(state: AgentState) -> dict[str, Any]:
     metadata = dict(state.get("metadata", {}))
     target_artifacts_source = _build_target_artifacts_source(
         str(state.get("user_input") or ""),
-        load_chat_history(state.get("conversation_id") or state.get("thread_id"), limit=12),
+        state.get("chat_history") or [],
     )
     metadata["source_paths"] = source_paths
     metadata["output_paths"] = output_paths

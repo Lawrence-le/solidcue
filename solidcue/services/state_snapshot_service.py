@@ -7,12 +7,11 @@ from typing import Any
 
 from solidcue.core.graph_agent.builder import build_agent_graph, build_async_agent_graph
 from solidcue.core.graph_agent.state.schema import AgentState
-from solidcue.services.run_engine import is_thread_resumable
-from solidcue.services.chat_history_service import (
-    delete_chat_history,
-    delete_conversation_metadata,
-    get_conversation_metadata,
-    load_chat_history,
+from solidcue.services.lg_client import (
+    delete_lg_thread,
+    get_lg_thread_by_conversation,
+    get_lg_thread_state,
+    get_lg_thread_status,
 )
 
 
@@ -133,11 +132,7 @@ async def load_live_state(thread_id: str) -> dict[str, Any]:
     snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
     values = getattr(snapshot, "values", None)
     state = values if isinstance(values, dict) else {}
-    if isinstance(state, dict):
-        state = dict(state)
-        conversation_id = state.get("conversation_id") if isinstance(state.get("conversation_id"), str) else None
-        state["chat_history"] = load_chat_history(conversation_id or thread_id)
-    return state
+    return dict(state) if isinstance(state, dict) else {}
 
 
 async def build_live_state_snapshot(
@@ -399,13 +394,13 @@ def run_checkpoint_maintenance(
     return {"thread_id": thread_id, "pruned": pruned, "reclaimed": reclaimed}
 
 
-def delete_conversation_state(conversation_id: str) -> bool:
+async def delete_conversation_state(conversation_id: str) -> bool:
     normalized_conversation_id = conversation_id.strip() if isinstance(conversation_id, str) else ""
     if not normalized_conversation_id:
         return False
 
-    db_path = resolve_checkpoint_db_path()
     deleted_checkpoint_rows = False
+    db_path = resolve_checkpoint_db_path()
     if db_path.exists():
         try:
             conn = _connect_checkpoint_db()
@@ -421,7 +416,6 @@ def delete_conversation_state(conversation_id: str) -> bool:
                     (normalized_conversation_id,),
                 )
                 thread_ids = [str(row[0]) for row in cur.fetchall() if row and isinstance(row[0], str) and row[0].strip()]
-                deleted_checkpoint_rows = False
                 for thread_id in thread_ids:
                     deleted_checkpoint_rows = delete_thread_state(thread_id) or deleted_checkpoint_rows
             finally:
@@ -429,15 +423,19 @@ def delete_conversation_state(conversation_id: str) -> bool:
         except Exception:
             deleted_checkpoint_rows = False
 
-    deleted_chat_rows = delete_chat_history(normalized_conversation_id)
-    deleted_conversation_row = delete_conversation_metadata(normalized_conversation_id)
-    return deleted_checkpoint_rows or deleted_chat_rows or deleted_conversation_row
+    # Also delete the LangGraph Server thread (best-effort).
+    try:
+        lg_thread = await get_lg_thread_by_conversation(normalized_conversation_id)
+        if lg_thread:
+            deleted_lg = await delete_lg_thread(lg_thread.get("thread_id", ""))
+            deleted_checkpoint_rows = deleted_checkpoint_rows or deleted_lg
+    except Exception:
+        pass
+
+    return deleted_checkpoint_rows
 
 
 def load_conversation_metadata(conversation_id: str) -> dict[str, Any]:
-    metadata = get_conversation_metadata(conversation_id)
-    if metadata:
-        return metadata
     normalized_conversation_id = conversation_id.strip() if isinstance(conversation_id, str) else ""
     return {
         "conversation_id": normalized_conversation_id,
@@ -452,58 +450,69 @@ def load_conversation_metadata(conversation_id: str) -> dict[str, Any]:
     }
 
 
-def load_conversation_snapshot(conversation_id: str) -> dict[str, Any]:
-    metadata = load_conversation_metadata(conversation_id)
-    conversation_id_value = metadata.get("conversation_id")
-    normalized_conversation_id = (
-        conversation_id_value.strip()
-        if isinstance(conversation_id_value, str) and conversation_id_value.strip()
-        else conversation_id.strip()
-        if isinstance(conversation_id, str)
-        else ""
-    )
+async def load_conversation_snapshot(conversation_id: str) -> dict[str, Any]:
+    """Load conversation snapshot from LangGraph Server thread state."""
+    normalized = conversation_id.strip() if isinstance(conversation_id, str) else ""
+    lg_thread = await get_lg_thread_by_conversation(normalized)
+    if lg_thread:
+        lg_thread_id = lg_thread.get("thread_id", "")
+        values = await get_lg_thread_state(lg_thread_id)
+        return {
+            "conversation_id": normalized,
+            "agent_key": values.get("target_agent_key") or values.get("agent_key") or None,
+            "worked_seconds": int(values.get("worked_seconds") or 0),
+            "timer_started_at": None,
+            "last_thread_id": lg_thread_id,
+            "last_run_id": None,
+            "last_run_status": None,
+            "created_at": None,
+            "updated_at": None,
+            "chat_history": values.get("chat_history") or [],
+        }
+    # No LG Server thread found — return empty snapshot.
     return {
-        "conversation_id": normalized_conversation_id,
-        "agent_key": metadata.get("agent_key") if isinstance(metadata.get("agent_key"), str) else None,
-        "worked_seconds": metadata.get("worked_seconds") if isinstance(metadata.get("worked_seconds"), int) else 0,
+        "conversation_id": normalized,
+        "agent_key": None,
+        "worked_seconds": 0,
         "timer_started_at": None,
-        "last_thread_id": metadata.get("last_thread_id")
-        if isinstance(metadata.get("last_thread_id"), str)
-        else None,
-        "last_run_id": metadata.get("last_run_id")
-        if isinstance(metadata.get("last_run_id"), str)
-        else None,
-        "last_run_status": metadata.get("last_run_status")
-        if isinstance(metadata.get("last_run_status"), str)
-        else None,
-        "created_at": metadata.get("created_at")
-        if isinstance(metadata.get("created_at"), str)
-        else None,
-        "updated_at": metadata.get("updated_at")
-        if isinstance(metadata.get("updated_at"), str)
-        else None,
-        "chat_history": load_chat_history(normalized_conversation_id),
+        "last_thread_id": None,
+        "last_run_id": None,
+        "last_run_status": None,
+        "created_at": None,
+        "updated_at": None,
+        "chat_history": [],
     }
 
 
 async def load_live_state_for_conversation(conversation_id: str) -> dict[str, Any]:
-    thread_id = get_latest_thread_id_for_conversation(conversation_id)
-    if not thread_id:
-        return {}
-    return await load_live_state(thread_id)
+    """Load live state values from LangGraph Server thread."""
+    normalized = conversation_id.strip() if isinstance(conversation_id, str) else ""
+    lg_thread = await get_lg_thread_by_conversation(normalized)
+    if lg_thread:
+        return await get_lg_thread_state(lg_thread.get("thread_id", ""))
+    return {}
 
 
 async def get_conversation_interrupt_payload(conversation_id: str) -> dict[str, Any] | None:
-    thread_id = get_latest_thread_id_for_conversation(conversation_id)
-    if not thread_id:
+    """Return interrupt payload from LangGraph Server thread state, or None."""
+    normalized = conversation_id.strip() if isinstance(conversation_id, str) else ""
+    lg_thread = await get_lg_thread_by_conversation(normalized)
+    if not lg_thread:
         return None
-    return await get_thread_interrupt_payload(thread_id)
+    return await get_thread_interrupt_payload(lg_thread.get("thread_id", ""))
 
 
 async def is_conversation_resumable(conversation_id: str) -> dict[str, Any]:
-    thread_id = get_latest_thread_id_for_conversation(conversation_id)
-    if not thread_id:
+    """Check LangGraph Server thread status to determine resumability."""
+    normalized = conversation_id.strip() if isinstance(conversation_id, str) else ""
+    lg_thread = await get_lg_thread_by_conversation(normalized)
+    if not lg_thread:
         return {"resumable": False, "next_nodes": [], "thread_id": None}
-    payload = await is_thread_resumable(thread_id)
-    payload["thread_id"] = thread_id
-    return payload
+    lg_thread_id = lg_thread.get("thread_id", "")
+    thread_status = await get_lg_thread_status(lg_thread_id)
+    resumable = thread_status in ("interrupted", "busy")
+    return {
+        "resumable": resumable,
+        "next_nodes": [],
+        "thread_id": lg_thread_id,
+    }

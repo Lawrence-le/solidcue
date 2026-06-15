@@ -6,7 +6,7 @@ from typing import Any
 from solidcue.agent_configs.loader import load_agent
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
-from solidcue.core.utils.metrics import build_metric_state_delta, timed_generate
+from solidcue.core.utils.metrics import build_metric_state_delta, timed_async_stream_generate
 from solidcue.core.graph_agent.prompts.final_output_prompt import build_final_output_messages
 
 if TYPE_CHECKING:
@@ -253,14 +253,14 @@ def resolve_final_output(state: AgentState, llm_output: str | None = None) -> st
     return llm_output or state.get("synthesis_draft") or existing_output or _build_fallback_output(state)
 
 
-def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict[str, Any]]:
+async def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict[str, Any]]:
     prepared = prepare_final_output_stream(state)
     if not prepared:
         return None, {}
 
     try:
         provider, messages = prepared
-        output, metric_final_output = timed_generate(provider, messages, node_name="final_output")
+        output, metric_final_output = await timed_async_stream_generate(provider, messages, node_name="final_output")
         if isinstance(output, str) and output.strip():
             return output.strip(), metric_final_output
     except Exception:
@@ -268,9 +268,9 @@ def _llm_compose_user_facing_output(state: AgentState) -> tuple[str | None, dict
     return None, {}
 
 
-def final_output_node(state: AgentState) -> dict[str, Any]:
+async def final_output_node(state: AgentState) -> dict[str, Any]:
     """Terminal node that composes and writes the final user-facing response."""
-    llm_output, metric_final_output = _llm_compose_user_facing_output(state)
+    llm_output, metric_final_output = await _llm_compose_user_facing_output(state)
     final_output = resolve_final_output(state, llm_output)
 
     return {

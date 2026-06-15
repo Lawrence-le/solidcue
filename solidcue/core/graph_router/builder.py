@@ -9,6 +9,7 @@ from typing import Any, Literal
 from langgraph.graph import END, StateGraph
 
 from solidcue.core.graph_router.nodes import (
+    execute_plan_node,
     final_output_node,
     handoff_node,
     initialize_router_node,
@@ -79,8 +80,14 @@ def _route_after_initialize(_state: RouterState) -> Literal["intent_router"]:
     return "intent_router"
 
 
-def _route_after_intent_router(state: RouterState) -> Literal["handoff", "final_output"]:
+def _route_after_intent_router(
+    state: RouterState,
+) -> Literal["execute_plan", "handoff", "final_output"]:
     if state.get("router_next") == "handoff":
+        # task intent with a plan → execute_plan (Wave 2 fan-out path)
+        if state.get("plan"):
+            return "execute_plan"
+        # create_agent or legacy no-plan route → old handoff stub
         return "handoff"
     return "final_output"
 
@@ -89,11 +96,16 @@ def _route_after_handoff(_state: RouterState) -> Literal["final_output"]:
     return "final_output"
 
 
-def _compile_graph(checkpointer: Any) -> Any:
+def _route_after_execute_plan(_state: RouterState) -> Literal["final_output"]:
+    return "final_output"
+
+
+def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
     graph = StateGraph(RouterState)
 
     graph.add_node("initialize", initialize_router_node)
     graph.add_node("intent_router", intent_router_node)
+    graph.add_node("execute_plan", execute_plan_node)
     graph.add_node("handoff", handoff_node)
     graph.add_node("final_output", final_output_node)
 
@@ -101,11 +113,24 @@ def _compile_graph(checkpointer: Any) -> Any:
 
     graph.add_conditional_edges("initialize", _route_after_initialize)
     graph.add_conditional_edges("intent_router", _route_after_intent_router)
+    graph.add_conditional_edges("execute_plan", _route_after_execute_plan)
     graph.add_conditional_edges("handoff", _route_after_handoff)
     graph.add_edge("final_output", END)
 
     compiled = graph.compile(checkpointer=checkpointer)
-    return compiled.with_config({"recursion_limit": _resolve_recursion_limit()})
+    cfg: dict[str, Any] = {"recursion_limit": _resolve_recursion_limit()}
+    if session_id:
+        # CallbackHandler reads metadata["langfuse_session_id"] on the root chain
+        # start event and groups all observations under one Langfuse session.
+        cfg["metadata"] = {
+            "langfuse_session_id": session_id,
+            "langfuse_trace_name": "solidcue:router",
+        }
+    from solidcue.observability.langfuse import get_langfuse_callbacks
+    callbacks = get_langfuse_callbacks()
+    if callbacks:
+        cfg["callbacks"] = callbacks
+    return compiled.with_config(cfg)
 
 
 async def build_async_router_graph() -> Any:
@@ -115,3 +140,14 @@ async def build_async_router_graph() -> Any:
 
 def build_router_graph() -> Any:
     return _compile_graph(_build_checkpointer())
+
+
+async def build_for_server(config: Any) -> Any:
+    """LangGraph Server graph factory for the router graph.
+
+    The server injects its own checkpointer; we compile without one.
+    No agent_key is needed — the router routes to all registered agents.
+    """
+    configurable = (config or {}).get("configurable") or {}
+    thread_id: str | None = configurable.get("thread_id") or None
+    return _compile_graph(checkpointer=None, session_id=thread_id)

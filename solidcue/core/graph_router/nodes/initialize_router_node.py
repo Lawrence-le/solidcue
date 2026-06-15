@@ -4,7 +4,6 @@ from typing import Any
 
 from solidcue.core.graph_router.nodes._shared import normalize_text
 from solidcue.core.graph_router.state.schema import RouterState
-from solidcue.services.chat_history_service import load_chat_history
 
 
 def initialize_router_node(state: RouterState) -> dict[str, Any]:
@@ -14,8 +13,16 @@ def initialize_router_node(state: RouterState) -> dict[str, Any]:
     updates: dict[str, Any] = {}
     if conversation_id:
         updates["conversation_id"] = conversation_id
-        if not state.get("chat_history"):
-            updates["chat_history"] = load_chat_history(conversation_id, limit=8)
     updates["worked_seconds"] = int(state.get("worked_seconds") or 0)
     updates["timer_started_at"] = state.get("timer_started_at")
+
+    # Append the user's turn to the persisted chat_history channel (operator.add).
+    # Under LangGraph Server the thread checkpoint accumulates history across turns;
+    # under the FastAPI + SqliteSaver path the same accumulation happens via the
+    # graph checkpoint.  Either way, reading state["chat_history"] in downstream
+    # nodes gives the full conversation history for this thread.
+    user_input = normalize_text(state.get("user_input"))
+    if user_input:
+        updates["chat_history"] = [{"role": "user", "content": user_input}]
+
     return updates

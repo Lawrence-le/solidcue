@@ -1,8 +1,11 @@
+import pytest
+
 from solidcue.core.graph_agent.nodes.discovery_node import discovery_node
 import importlib as _il; discovery_module = _il.import_module("solidcue.core.graph_agent.nodes.discovery_node")
 
 
-def test_discovery_node_extracts_paths_from_llm(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_discovery_node_extracts_paths_from_llm(monkeypatch) -> None:
     monkeypatch.setattr(
         discovery_module,
         "load_agent_skill",
@@ -19,8 +22,8 @@ def test_discovery_node_extracts_paths_from_llm(monkeypatch) -> None:
         pass
 
     class _Provider:
-        def generate(self, _messages):
-            return (
+        async def async_stream_generate(self, _messages, **kwargs):
+            yield (
                 '{"source_paths":["resume_agent/source/experience.md","resume_agent/source/project_bank.md"],'
                 '"output_paths":["resume_agent/generated_resumes/"],'
                 '"source_filenames":["experience.md","project_bank.md"],'
@@ -30,7 +33,7 @@ def test_discovery_node_extracts_paths_from_llm(monkeypatch) -> None:
     monkeypatch.setattr(discovery_module, "load_agent", lambda _agent_key: _Agent())
     monkeypatch.setattr(discovery_module, "get_provider_for_role", lambda _agent, _role: _Provider())
 
-    result = discovery_node({"agent_key": "resume_builder"})
+    result = await discovery_node({"agent_key": "resume_builder"})
 
     assert result["source_paths"] == [
         "resume_agent/source/experience.md",
@@ -45,12 +48,9 @@ def test_discovery_node_extracts_paths_from_llm(monkeypatch) -> None:
     assert isinstance(result["metric_discovery"], dict)
 
 
-def test_discovery_node_uses_legacy_llm_paths_key_as_source_paths(monkeypatch) -> None:
-    monkeypatch.setattr(
-        discovery_module,
-        "load_agent_skill",
-        lambda _agent_key: "",
-    )
+@pytest.mark.asyncio
+async def test_discovery_node_uses_legacy_llm_paths_key_as_source_paths(monkeypatch) -> None:
+    monkeypatch.setattr(discovery_module, "load_agent_skill", lambda _agent_key: "")
     monkeypatch.setattr(
         discovery_module,
         "load_agent_persona",
@@ -62,13 +62,13 @@ def test_discovery_node_uses_legacy_llm_paths_key_as_source_paths(monkeypatch) -
         pass
 
     class _Provider:
-        def generate(self, _messages):
-            return '{"paths":["resume_agent/source/experience.md","resume_agent/source/project_bank.md"]}'
+        async def async_stream_generate(self, _messages, **kwargs):
+            yield '{"paths":["resume_agent/source/experience.md","resume_agent/source/project_bank.md"]}'
 
     monkeypatch.setattr(discovery_module, "load_agent", lambda _agent_key: _Agent())
     monkeypatch.setattr(discovery_module, "get_provider_for_role", lambda _agent, _role: _Provider())
 
-    result = discovery_node({"agent_key": "resume_builder"})
+    result = await discovery_node({"agent_key": "resume_builder"})
 
     assert result["source_paths"] == [
         "resume_agent/source/experience.md",
@@ -78,7 +78,8 @@ def test_discovery_node_uses_legacy_llm_paths_key_as_source_paths(monkeypatch) -
     assert result["output_filenames"] == []
 
 
-def test_discovery_node_prefers_skill_paths(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_discovery_node_prefers_skill_paths(monkeypatch) -> None:
     monkeypatch.setattr(
         discovery_module,
         "load_agent_skill",
@@ -94,20 +95,21 @@ def test_discovery_node_prefers_skill_paths(monkeypatch) -> None:
         pass
 
     class _Provider:
-        def generate(self, _messages):
-            return '{"source_paths":["resume_agent/source/profile","resume_agent/source/experience"],"output_paths":[]}'
+        async def async_stream_generate(self, _messages, **kwargs):
+            yield '{"source_paths":["resume_agent/source/profile","resume_agent/source/experience"],"output_paths":[]}'
 
     monkeypatch.setattr(discovery_module, "load_agent", lambda _agent_key: _Agent())
     monkeypatch.setattr(discovery_module, "get_provider_for_role", lambda _agent, _role: _Provider())
 
-    result = discovery_node({"agent_key": "resume_builder"})
+    result = await discovery_node({"agent_key": "resume_builder"})
 
     assert result["source_paths"] == ["resume_agent/source/profile", "resume_agent/source/experience"]
     assert result["source_filenames"] == []
     assert result["output_filenames"] == []
 
 
-def test_discovery_node_extracts_paths_from_tools_md(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_discovery_node_extracts_paths_from_tools_md(monkeypatch) -> None:
     monkeypatch.setattr(discovery_module, "load_agent_skill", lambda _agent_key: "")
     monkeypatch.setattr(discovery_module, "load_agent_persona", lambda _agent_key: "")
     monkeypatch.setattr(
@@ -124,8 +126,8 @@ def test_discovery_node_extracts_paths_from_tools_md(monkeypatch) -> None:
         pass
 
     class _Provider:
-        def generate(self, _messages):
-            return (
+        async def async_stream_generate(self, _messages, **kwargs):
+            yield (
                 '{"source_paths":["resume_agent/source/master"],'
                 '"output_paths":["resume_agent/generated_resumes/"]}'
             )
@@ -133,7 +135,7 @@ def test_discovery_node_extracts_paths_from_tools_md(monkeypatch) -> None:
     monkeypatch.setattr(discovery_module, "load_agent", lambda _agent_key: _Agent())
     monkeypatch.setattr(discovery_module, "get_provider_for_role", lambda _agent, _role: _Provider())
 
-    result = discovery_node({"agent_key": "resume_builder"})
+    result = await discovery_node({"agent_key": "resume_builder"})
 
     assert result["source_paths"] == ["resume_agent/source/master"]
     assert result["output_paths"] == ["resume_agent/generated_resumes/"]

@@ -1,4 +1,7 @@
 import importlib as _il; synthesis_module = _il.import_module("solidcue.core.graph_agent.nodes.synthesis_node")
+
+import pytest
+
 from solidcue.core.graph_agent.nodes.synthesis_node import synthesis_node
 
 
@@ -19,17 +22,17 @@ class _Agent:
 
 
 class _Provider:
-    def generate(self, messages, **kwargs):
-        return "Polished response from synthesis."
+    async def async_stream_generate(self, messages, **kwargs):
+        yield "Polished response from synthesis."
 
 
 class _CaptureProvider:
     def __init__(self):
         self.messages = None
 
-    def generate(self, messages, **kwargs):
+    async def async_stream_generate(self, messages, **kwargs):
         self.messages = messages
-        return "Corrected response from synthesis."
+        yield "Corrected response from synthesis."
 
 
 def _patch(monkeypatch, provider=None) -> None:
@@ -38,10 +41,11 @@ def _patch(monkeypatch, provider=None) -> None:
     monkeypatch.setattr(synthesis_module, "load_agent_persona", lambda _: "")
 
 
-def test_synthesis_writes_only_synthesis_draft_from_artifact(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_synthesis_writes_only_synthesis_draft_from_artifact(monkeypatch) -> None:
     _patch(monkeypatch)
 
-    result = synthesis_node(
+    result = await synthesis_node(
         {
             "agent_key": "resume_builder",
         }
@@ -54,10 +58,11 @@ def test_synthesis_writes_only_synthesis_draft_from_artifact(monkeypatch) -> Non
         assert key not in result, f"synthesis_node must not write '{key}'"
 
 
-def test_synthesis_writes_only_synthesis_draft_from_decision_respond(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_synthesis_writes_only_synthesis_draft_from_decision_respond(monkeypatch) -> None:
     _patch(monkeypatch)
 
-    result = synthesis_node(
+    result = await synthesis_node(
         {
             "agent_key": "x",
             "decision": {"action": "respond", "final_answer": "Direct answer"},
@@ -69,10 +74,11 @@ def test_synthesis_writes_only_synthesis_draft_from_decision_respond(monkeypatch
         assert key not in result
 
 
-def test_synthesis_writes_only_synthesis_draft_from_execution(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_synthesis_writes_only_synthesis_draft_from_execution(monkeypatch) -> None:
     _patch(monkeypatch)
 
-    result = synthesis_node(
+    result = await synthesis_node(
         {
             "agent_key": "x",
             "execution_result": {"success": True, "content": "Tool output"},
@@ -84,14 +90,16 @@ def test_synthesis_writes_only_synthesis_draft_from_execution(monkeypatch) -> No
         assert key not in result
 
 
-def test_synthesis_falls_back_to_raw_material_when_llm_fails(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_synthesis_falls_back_to_raw_material_when_llm_fails(monkeypatch) -> None:
     class _BadProvider:
-        def generate(self, messages, **kwargs):
+        async def async_stream_generate(self, messages, **kwargs):
             raise RuntimeError("Provider error")
+            yield  # makes this an async generator
 
     _patch(monkeypatch, provider=_BadProvider())
 
-    result = synthesis_node(
+    result = await synthesis_node(
         {
             "agent_key": "x",
             "execution_result": {"success": True, "content": "Raw tool output"},
@@ -101,11 +109,12 @@ def test_synthesis_falls_back_to_raw_material_when_llm_fails(monkeypatch) -> Non
     assert "Raw tool output" in result["synthesis_draft"]
 
 
-def test_synthesis_prompt_includes_actionable_validation_retry_reason(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_synthesis_prompt_includes_actionable_validation_retry_reason(monkeypatch) -> None:
     provider = _CaptureProvider()
     _patch(monkeypatch, provider=provider)
 
-    result = synthesis_node(
+    result = await synthesis_node(
         {
             "agent_key": "x",
             "retry_reason": "Ungrounded claims: Redis and SQLite.",

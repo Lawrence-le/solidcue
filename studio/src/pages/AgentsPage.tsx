@@ -7,9 +7,7 @@ import { api, ApiError } from "@/lib/api"
 import type { AgentConfig } from "@/lib/types"
 import {
   emptyRole,
-  normalizeKey,
   resolveBaseUrl,
-  PROVIDER_META,
   type RoleForm as RoleFormData,
   type ProviderType,
 } from "@/lib/agent-config"
