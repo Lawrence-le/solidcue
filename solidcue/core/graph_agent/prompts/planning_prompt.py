@@ -42,38 +42,24 @@ def build_planning_messages(
     user_input: str,
     skill_guidance: str = "",
     tools_guidance: str = "",
-    metadata: dict[str, Any] | None = None,
+    source_paths: list[str] | None = None,
+    output_paths: list[str] | None = None,
+    source_filenames: list[str] | None = None,
+    output_filenames: list[str] | None = None,
     chat_history: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     # 1. Prepare dynamic components
     compact_skill = _compact_guidance(skill_guidance) or "General technical project management standards."
     compact_tools = _compact_guidance(tools_guidance) or "No specific tool constraints."
-    
-    source_paths_str = "None specified."
-    output_paths_str = "None specified."
-    source_filenames_str = "None specified."
-    output_filenames_str = "None specified."
-    if isinstance(metadata, dict):
-        source_paths = metadata.get("source_paths")
-        if isinstance(source_paths, list):
-            paths = [str(p).strip() for p in source_paths if str(p).strip()]
-            if paths:
-                source_paths_str = "\n".join(f"- {p}" for p in paths)
-        output_paths = metadata.get("output_paths")
-        if isinstance(output_paths, list):
-            paths = [str(p).strip() for p in output_paths if str(p).strip()]
-            if paths:
-                output_paths_str = "\n".join(f"- {p}" for p in paths)
-        source_filenames = metadata.get("source_filenames")
-        if isinstance(source_filenames, list):
-            filenames = [str(name).strip() for name in source_filenames if str(name).strip()]
-            if filenames:
-                source_filenames_str = "\n".join(f"- {name}" for name in filenames)
-        output_filenames = metadata.get("output_filenames")
-        if isinstance(output_filenames, list):
-            filenames = [str(name).strip() for name in output_filenames if str(name).strip()]
-            if filenames:
-                output_filenames_str = "\n".join(f"- {name}" for name in filenames)
+
+    def _fmt_list(values: list[str] | None) -> str:
+        items = [str(v).strip() for v in (values or []) if str(v).strip()]
+        return "\n".join(f"- {v}" for v in items) if items else "None specified."
+
+    source_paths_str = _fmt_list(source_paths)
+    output_paths_str = _fmt_list(output_paths)
+    source_filenames_str = _fmt_list(source_filenames)
+    output_filenames_str = _fmt_list(output_filenames)
 
     # 2. Build static system prompt + dynamic runtime context
     system_prompt = build_planning_system_prompt()

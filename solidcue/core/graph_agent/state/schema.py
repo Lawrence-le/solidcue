@@ -51,6 +51,13 @@ class AgentState(TypedDict, total=False):
     validation_report: dict[str, Any]
     final_response: str
 
+    # --- Source / artifact discovery ---
+    source_paths: list[str]
+    output_paths: list[str]
+    source_filenames: list[str]
+    output_filenames: list[str]
+    target_artifacts_source: list[dict[str, Any]]
+
     # --- Task planning ---
     task_plan: list[dict[str, Any]]
     current_task: str

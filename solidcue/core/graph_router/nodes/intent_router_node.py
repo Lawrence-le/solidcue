@@ -204,6 +204,9 @@ async def intent_router_node(
             "target_agent_key": target_agent_key,
         }
 
+    raw_sources = parsed.get("target_artifacts_source")
+    target_artifacts_source = raw_sources if isinstance(raw_sources, list) else []
+
     return {
         "router_intent": router_intent,
         "router_next": router_next,
@@ -213,4 +216,5 @@ async def intent_router_node(
         "final_response": assistant_draft,
         "plan": plan,
         "handoff": handoff if isinstance(handoff, dict) else {},
+        "target_artifacts_source": target_artifacts_source,
     }

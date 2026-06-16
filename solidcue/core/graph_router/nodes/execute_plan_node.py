@@ -145,6 +145,7 @@ async def execute_plan_node(state: RouterState) -> dict[str, Any]:
                 "user_input": composed_input,
                 "agent_key": agent_key,
                 "chat_history": list(state.get("chat_history") or []),
+                "target_artifacts_source": list(state.get("target_artifacts_source") or []),
             }
             config: dict[str, Any] = {
                 "configurable": {"agent_key": agent_key},

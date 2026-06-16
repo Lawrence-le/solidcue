@@ -4,12 +4,10 @@ from solidcue.core.graph_agent.prompts.planning_prompt import build_planning_mes
 def test_planning_prompt_includes_output_paths_from_metadata() -> None:
     messages = build_planning_messages(
         user_input="Create a resume",
-        metadata={
-            "source_paths": ["resume_agent/source/profile"],
-            "output_paths": ["resume_agent/generated_resumes/"],
-            "source_filenames": ["master_resume.md"],
-            "output_filenames": ["Lawrence Lee Resume.docx"],
-        },
+        source_paths=["resume_agent/source/profile"],
+        output_paths=["resume_agent/generated_resumes/"],
+        source_filenames=["master_resume.md"],
+        output_filenames=["Lawrence Lee Resume.docx"],
     )
 
     assert len(messages) == 3

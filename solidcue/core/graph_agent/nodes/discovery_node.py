@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
-import hashlib
-import re
+from pathlib import Path
 from typing import Any
 
-from solidcue.agent_configs.loader import load_agent, load_agent_persona, load_agent_skill, load_agent_tools
+from solidcue.agent_configs.loader import load_agent, load_agent_skill, load_agent_tools, get_discovery_path
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_async_stream_generate
+from solidcue.core.utils.source_extraction import build_target_artifacts_source
 
 """
 Discovery Node - Function Overview
@@ -17,14 +17,21 @@ Discovery Node - Function Overview
 _extract_json_object:
 Parse discovery/model JSON payloads robustly.
 
+_load_discovery_cache:
+Load discovery.json from agent folder if it exists.
+
+_save_discovery_cache:
+Write discovery result to discovery.json in agent folder.
+
 _extract_paths_with_llm:
-Extract path/filename hints from SKILL/TOOLS guidance.
+Extract path/filename hints from SKILL/TOOLS guidance. Called only when
+discovery.json is absent; result is saved for subsequent runs.
 
 discovery_node:
 Main entrypoint. Phases:
-1) Load skill/tools guidance
-2) Discover path hints
-3) Return metadata additions for downstream prompts
+1) Load discovery.json if present (cache hit — no LLM call)
+2) If missing, call LLM and save result to discovery.json (cache miss)
+3) Resolve target_artifacts_source from state or user_input fallback
 """
 
 # ---------------------------------------------------------------------------
@@ -54,6 +61,40 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+# ---------------------------------------------------------------------------
+# Section: discovery cache helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_discovery_cache(agent_key: str) -> dict[str, Any] | None:
+    path = get_discovery_path(agent_key)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _save_discovery_cache(agent_key: str, data: dict[str, Any]) -> None:
+    path = get_discovery_path(agent_key)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _parse_path_list(raw: Any) -> list[str]:
+    result: list[str] = []
+    for value in raw if isinstance(raw, list) else []:
+        if isinstance(value, str):
+            cleaned = value.strip().rstrip(".,;:)]")
+            if cleaned and cleaned not in result:
+                result.append(cleaned)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -109,100 +150,17 @@ async def _extract_paths_with_llm(
         return [], [], [], [], metric_discovery
 
     source_raw = payload.get("source_paths")
-    output_raw = payload.get("output_paths")
-    source_filenames_raw = payload.get("source_filenames")
-    output_filenames_raw = payload.get("output_filenames")
     # Backward compatibility for older format.
     legacy_paths = payload.get("paths")
     if not isinstance(source_raw, list) and isinstance(legacy_paths, list):
         source_raw = legacy_paths
 
-    source_paths: list[str] = []
-    output_paths: list[str] = []
-    source_filenames: list[str] = []
-    output_filenames: list[str] = []
-    for value in source_raw if isinstance(source_raw, list) else []:
-        if isinstance(value, str):
-            path = value.strip().rstrip(".,;:)]")
-            if path and path not in source_paths:
-                source_paths.append(path)
-    for value in output_raw if isinstance(output_raw, list) else []:
-        if isinstance(value, str):
-            path = value.strip().rstrip(".,;:)]")
-            if path and path not in output_paths:
-                output_paths.append(path)
-    for value in source_filenames_raw if isinstance(source_filenames_raw, list) else []:
-        if isinstance(value, str):
-            filename = value.strip().rstrip(".,;:)]")
-            if filename and filename not in source_filenames:
-                source_filenames.append(filename)
-    for value in output_filenames_raw if isinstance(output_filenames_raw, list) else []:
-        if isinstance(value, str):
-            filename = value.strip().rstrip(".,;:)]")
-            if filename and filename not in output_filenames:
-                output_filenames.append(filename)
+    source_paths = _parse_path_list(source_raw)
+    output_paths = _parse_path_list(payload.get("output_paths"))
+    source_filenames = _parse_path_list(payload.get("source_filenames"))
+    output_filenames = _parse_path_list(payload.get("output_filenames"))
+
     return source_paths, output_paths, source_filenames, output_filenames, metric_discovery
-
-
-# ---------------------------------------------------------------------------
-# Section: source-item mapping helpers
-# ---------------------------------------------------------------------------
-
-
-def _item_key_from_url(url: str) -> str:
-    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
-    return f"u_{digest}"
-
-
-def _extract_urls_from_input(user_input: str) -> list[str]:
-    if not isinstance(user_input, str) or not user_input.strip():
-        return []
-    pattern = re.compile(r"https?://[^\s)>\"']+")
-    raw_urls = pattern.findall(user_input)
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for url in raw_urls:
-        normalized = url.strip().rstrip(".,;:!?)]")
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            deduped.append(normalized)
-    return deduped
-
-
-def _extract_urls_from_chat_history(chat_history: list[dict[str, Any]] | None) -> list[str]:
-    if not isinstance(chat_history, list) or not chat_history:
-        return []
-
-    urls: list[str] = []
-    seen: set[str] = set()
-    for entry in chat_history:
-        if not isinstance(entry, dict):
-            continue
-        if str(entry.get("role") or "").strip() != "user":
-            continue
-        for url in _extract_urls_from_input(str(entry.get("content") or "")):
-            if url not in seen:
-                seen.add(url)
-                urls.append(url)
-    return urls
-
-
-def _build_target_artifacts_source(user_input: str, chat_history: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    urls = _extract_urls_from_chat_history(chat_history)
-    for url in _extract_urls_from_input(user_input):
-        if url not in urls:
-            urls.append(url)
-    items: list[dict[str, Any]] = []
-    for idx, url in enumerate(urls, start=1):
-        items.append(
-            {
-                "index": idx,
-                "source_type": "url",
-                "source_ref": url,
-                "item_key": _item_key_from_url(url),
-            }
-        )
-    return items
 
 
 # ---------------------------------------------------------------------------
@@ -222,33 +180,44 @@ async def discovery_node(state: AgentState) -> dict[str, Any]:
             "metric_discovery": {},
         }
 
-    # Phase 2: load agent static guidance (best effort).
-    try:
-        skill_text = load_agent_skill(agent_key)
-    except Exception:
-        skill_text = ""
-    try:
-        tools_text = load_agent_tools(agent_key)
-    except Exception:
-        tools_text = ""
+    # Phase 2: load from discovery.json cache if present.
+    metric_discovery: dict[str, Any] = {}
+    cached = _load_discovery_cache(agent_key)
+    if cached is not None:
+        source_paths = _parse_path_list(cached.get("source_paths"))
+        output_paths = _parse_path_list(cached.get("output_paths"))
+        source_filenames = _parse_path_list(cached.get("source_filenames"))
+        output_filenames = _parse_path_list(cached.get("output_filenames"))
+    else:
+        # Phase 3: cache miss — call LLM and save result to discovery.json.
+        try:
+            skill_text = load_agent_skill(agent_key)
+        except Exception:
+            skill_text = ""
+        try:
+            tools_text = load_agent_tools(agent_key)
+        except Exception:
+            tools_text = ""
 
-    # Phase 3: extract path hints using discovery model call.
-    source_paths, output_paths, source_filenames, output_filenames, metric_discovery = await _extract_paths_with_llm(
-        agent_key,
-        skill_text,
-        tools_text,
-    )
-    # Phase 4: merge discovery artifacts into metadata.
+        source_paths, output_paths, source_filenames, output_filenames, metric_discovery = await _extract_paths_with_llm(
+            agent_key,
+            skill_text,
+            tools_text,
+        )
+        _save_discovery_cache(agent_key, {
+            "source_paths": source_paths,
+            "output_paths": output_paths,
+            "source_filenames": source_filenames,
+            "output_filenames": output_filenames,
+        })
+
+    # Phase 4: resolve target_artifacts_source — use router-populated value if present,
+    # otherwise fall back to extracting from user_input (direct agent invocation).
     metadata = dict(state.get("metadata", {}))
-    target_artifacts_source = _build_target_artifacts_source(
+    target_artifacts_source = state.get("target_artifacts_source") or build_target_artifacts_source(
         str(state.get("user_input") or ""),
         state.get("chat_history") or [],
     )
-    metadata["source_paths"] = source_paths
-    metadata["output_paths"] = output_paths
-    metadata["source_filenames"] = source_filenames
-    metadata["output_filenames"] = output_filenames
-    metadata["target_artifacts_source"] = target_artifacts_source
 
     return {
         "source_paths": source_paths,

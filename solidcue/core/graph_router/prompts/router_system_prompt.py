@@ -32,7 +32,13 @@ Rules:
   Example: "request: generate resume\nurl: https://...\nname: Lawrence Lee"
   Do not add guidance, steps, constraints, or anything the user did not say.
   The agent already knows how to do its job — your only role is to clarify what and with what inputs.
-- Emit the JSON keys in this order: assistant_draft, router_intent, router_next, plan, route_reason.
+- target_artifacts_source: extract every source the user provided as input for the task. Each entry must have:
+  - index: 1-based integer
+  - source_type: "url", "file_path", "text", or "other"
+  - source_ref: the actual value (URL, path, or short label)
+  - item_key: a short stable slug derived from source_ref (e.g. "u_abc123" for a URL, "f_resume" for a file)
+  For chat or clarify intents, set target_artifacts_source to [].
+- Emit the JSON keys in this order: assistant_draft, router_intent, router_next, plan, route_reason, target_artifacts_source.
 - Return JSON only.
 
 Required JSON shape:
@@ -43,7 +49,10 @@ Required JSON shape:
   "plan": [
     { "agent_key": "agent_key", "sub_task": "what this agent should do" }
   ],
-  "route_reason": "short explanation"
+  "route_reason": "short explanation",
+  "target_artifacts_source": [
+    { "index": 1, "source_type": "url", "source_ref": "https://...", "item_key": "u_abc123" }
+  ]
 }
 
 For chat, set assistant_draft to a concise direct response, set router_next to final_output, and set plan to [].

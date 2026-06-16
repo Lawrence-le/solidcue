@@ -106,6 +106,14 @@ def get_tools_path(agent_key: str) -> Path:
     return AGENTS_ROOT_DIR / agent_key / "TOOLS.md"
 
 
+def get_discovery_path(agent_key: str) -> Path:
+    return AGENTS_ROOT_DIR / agent_key / "discovery.json"
+
+
+def get_task_plan_path(agent_key: str) -> Path:
+    return AGENTS_ROOT_DIR / agent_key / "task_plan.json"
+
+
 def _get_legacy_agent_path(agent_key: str) -> Path:
     return LEGACY_AGENT_CONFIG_DIR / f"{agent_key}.yaml"
 

@@ -87,7 +87,8 @@ For every task, define these fields in order:
 - The decision node has full SKILL.md access at runtime. It will fill in specifics.
 - ✗ WRONG: `"context": {"columns": "['col_a', 'col_b', ...]"}` (duplicates SKILL.md)
 - ✓ CORRECT: `"context": {"tool": "write_records"}`
-- Keep task context lean: tool name, IDs, paths, URLs, SKILL.md section references.
+- Keep task context lean: tool name, static paths, SKILL.md section references.
+- NEVER write user-supplied URLs or dynamic input values into context. These are resolved at runtime from `target_artifacts_source` via `item_key`. Writing them here causes stale values on the next run.
 
 ## 5.4 Synthesis Granularity
 - Each synthesis task produces ONE deliverable.
@@ -121,6 +122,7 @@ Before submitting the plan, verify:
 - `"tools": [...]` — split into multiple tasks
 - `"tool": "tool1, tool2"` — split into multiple tasks
 - `"columns": [...]` duplicated from SKILL.md — remove duplicated spec
+- `"url": "https://..."` in context — URLs come from `target_artifacts_source` at runtime, never bake them in
 - `"requires": ["Get the data"]` — use past participle: `["data_retrieved"]`
 - Tasks for "chatting" with the user — there's a final response node for that
 """.strip()

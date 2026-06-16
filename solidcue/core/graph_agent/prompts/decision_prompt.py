@@ -261,8 +261,13 @@ def _build_task_guidance(
     )
 
 
-def _append_path_hints(system_prompt: str, meta: dict[str, Any]) -> str:
-    source_paths = meta.get("source_paths")
+def _append_path_hints(
+    system_prompt: str,
+    source_paths: list[str] | None = None,
+    output_paths: list[str] | None = None,
+    source_filenames: list[str] | None = None,
+    output_filenames: list[str] | None = None,
+) -> str:
     if isinstance(source_paths, list):
         sanitized_paths = [str(path).strip() for path in source_paths if str(path).strip()]
         if sanitized_paths:
@@ -275,7 +280,6 @@ def _append_path_hints(system_prompt: str, meta: dict[str, Any]) -> str:
                 f"{joined_paths}"
             )
 
-    output_paths = meta.get("output_paths")
     if isinstance(output_paths, list):
         sanitized_paths = [str(path).strip() for path in output_paths if str(path).strip()]
         if sanitized_paths:
@@ -288,7 +292,6 @@ def _append_path_hints(system_prompt: str, meta: dict[str, Any]) -> str:
                 f"{joined_paths}"
             )
 
-    source_filenames = meta.get("source_filenames")
     if isinstance(source_filenames, list):
         sanitized_names = [str(name).strip() for name in source_filenames if str(name).strip()]
         if sanitized_names:
@@ -301,7 +304,6 @@ def _append_path_hints(system_prompt: str, meta: dict[str, Any]) -> str:
                 f"{joined_names}"
             )
 
-    output_filenames = meta.get("output_filenames")
     if isinstance(output_filenames, list):
         sanitized_names = [str(name).strip() for name in output_filenames if str(name).strip()]
         if sanitized_names:
@@ -405,6 +407,22 @@ def _append_run_state_overrides(
     return system_prompt
 
 
+def _format_target_artifacts_source(items: list[dict[str, Any]] | None) -> str:
+    if not isinstance(items, list) or not items:
+        return ""
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index", "?")
+        source_type = item.get("source_type", "")
+        source_ref = item.get("source_ref", "")
+        item_key = item.get("item_key", "")
+        if source_ref and item_key:
+            lines.append(f"- [{idx}] type={source_type} ref={source_ref} item_key={item_key}")
+    return "\n".join(lines)
+
+
 def _build_runtime_context_message(
     *,
     time_location_context: dict[str, str],
@@ -413,6 +431,11 @@ def _build_runtime_context_message(
     current_task_type: str,
     retry_reason: str | None,
     chat_history: list[dict[str, Any]] | None,
+    source_paths: list[str] | None = None,
+    output_paths: list[str] | None = None,
+    source_filenames: list[str] | None = None,
+    output_filenames: list[str] | None = None,
+    target_artifacts_source: list[dict[str, Any]] | None = None,
 ) -> str:
     runtime_context = (
         "=== RUNTIME CONTEXT ===\n"
@@ -424,7 +447,22 @@ def _build_runtime_context_message(
         "=== TASK GUIDANCE ===\n"
         f"{task_guidance}"
     )
-    runtime_context = _append_path_hints(runtime_context, meta)
+    artifacts_text = _format_target_artifacts_source(target_artifacts_source)
+    if artifacts_text:
+        runtime_context += (
+            "\n\n=== SOURCE INPUTS ===\n"
+            "These are the user-provided source inputs for this task. "
+            "Use source_ref as the URL or path argument when calling tools. "
+            "Match tasks to sources using item_key.\n"
+            f"{artifacts_text}"
+        )
+    runtime_context = _append_path_hints(
+        runtime_context,
+        source_paths=source_paths,
+        output_paths=output_paths,
+        source_filenames=source_filenames,
+        output_filenames=output_filenames,
+    )
     runtime_context = _append_run_state_overrides(
         runtime_context,
         meta=meta,
@@ -441,6 +479,11 @@ def build_decision_messages(
     metadata: dict[str, Any] | None = None,
     tool_call_history: list[dict[str, Any]] | None = None,
     chat_history: list[dict[str, Any]] | None = None,
+    source_paths: list[str] | None = None,
+    output_paths: list[str] | None = None,
+    source_filenames: list[str] | None = None,
+    output_filenames: list[str] | None = None,
+    target_artifacts_source: list[dict[str, Any]] | None = None,
 ):
     tools = list(agent.tools or [])
     meta = metadata if isinstance(metadata, dict) else {}
@@ -469,6 +512,11 @@ def build_decision_messages(
         current_task_type=current_task_type,
         retry_reason=retry_reason,
         chat_history=chat_history,
+        source_paths=source_paths,
+        output_paths=output_paths,
+        source_filenames=source_filenames,
+        output_filenames=output_filenames,
+        target_artifacts_source=target_artifacts_source,
     )
 
     messages: list[dict[str, Any]] = [

@@ -1,4 +1,4 @@
-from solidcue.core.graph_agent.nodes.discovery_node import _build_target_artifacts_source
+from solidcue.core.utils.source_extraction import build_target_artifacts_source as _build_target_artifacts_source
 
 
 def test_build_target_artifacts_source_uses_prior_user_chat_history() -> None:

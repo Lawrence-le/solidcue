@@ -48,7 +48,7 @@ def test_system_prompt_includes_source_path_hints_from_metadata() -> None:
     messages = build_decision_messages(
         agent=DummyAgent(),
         user_input="generate a resume",
-        metadata={"source_paths": ["resume_agent/source/experience.md"]},
+        source_paths=["resume_agent/source/experience.md"],
     )
     runtime_context = messages[1]["content"]
     assert "Source path hints" in runtime_context
@@ -59,11 +59,9 @@ def test_system_prompt_includes_output_path_and_filename_hints_from_metadata() -
     messages = build_decision_messages(
         agent=DummyAgent(),
         user_input="generate a resume",
-        metadata={
-            "output_paths": ["resume_agent/generated_resumes/"],
-            "source_filenames": ["master_resume.md"],
-            "output_filenames": ["Lawrence Lee Resume.docx"],
-        },
+        output_paths=["resume_agent/generated_resumes/"],
+        source_filenames=["master_resume.md"],
+        output_filenames=["Lawrence Lee Resume.docx"],
     )
     runtime_context = messages[1]["content"]
     assert "Output path hints" in runtime_context

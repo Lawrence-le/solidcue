@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any
 
-from solidcue.agent_configs.loader import load_agent, load_agent_skill, load_agent_tools
+from solidcue.agent_configs.loader import load_agent, load_agent_skill, load_agent_tools, get_task_plan_path
 from solidcue.providers.provider_resolver import get_provider_for_role
 from solidcue.core.graph_agent.state.schema import AgentState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_async_stream_generate
@@ -121,7 +121,10 @@ async def _llm_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, 
             user_input=user_input,
             skill_guidance=load_agent_skill(agent_key),
             tools_guidance=load_agent_tools(agent_key),
-            metadata=state.get("metadata") if isinstance(state.get("metadata"), dict) else {},
+            source_paths=state.get("source_paths") or [],
+            output_paths=state.get("output_paths") or [],
+            source_filenames=state.get("source_filenames") or [],
+            output_filenames=state.get("output_filenames") or [],
             chat_history=state.get("chat_history") or [],
         )
         response_text, metric_stats = await timed_async_stream_generate(provider, messages, node_name="planning")
@@ -217,15 +220,12 @@ def _ordinal_index_from_text(text: str) -> int | None:
     return None
 
 
-def _metadata_item_map(metadata: dict[str, Any] | None) -> tuple[dict[int, str], dict[str, str]]:
+def _metadata_item_map(target_artifacts_source: list[dict[str, Any]] | None) -> tuple[dict[int, str], dict[str, str]]:
     by_index: dict[int, str] = {}
     by_url: dict[str, str] = {}
-    if not isinstance(metadata, dict):
+    if not isinstance(target_artifacts_source, list):
         return by_index, by_url
-    items = metadata.get("target_artifacts_source")
-    if not isinstance(items, list):
-        return by_index, by_url
-    for item in items:
+    for item in target_artifacts_source:
         if not isinstance(item, dict):
             continue
         key = str(item.get("item_key") or "").strip()
@@ -242,7 +242,7 @@ def _metadata_item_map(metadata: dict[str, Any] | None) -> tuple[dict[int, str],
 
 def _guardrail_assign_item_keys(
     tasks: list[dict[str, Any]],
-    metadata: dict[str, Any] | None = None,
+    target_artifacts_source: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Ensure each task has a stable `context.item_key`.
 
@@ -258,7 +258,7 @@ def _guardrail_assign_item_keys(
     """
     url_fields = ("source_ref", "posting_url", "url", "jd_url", "job_url")
     url_to_item: dict[str, str] = {}
-    metadata_index_map, metadata_url_map = _metadata_item_map(metadata)
+    metadata_index_map, metadata_url_map = _metadata_item_map(target_artifacts_source)
     discovered_keys: list[str] = []
     current_item_key: str | None = None
     fallback_counter = 0
@@ -407,12 +407,37 @@ def _guardrail_normalize_task_shape(tasks: list[dict[str, Any]]) -> list[dict[st
 
 
 # ---------------------------------------------------------------------------
+# Section: task plan cache helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_task_plan_cache(agent_key: str) -> list[dict[str, Any]] | None:
+    path = get_task_plan_path(agent_key)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
+def _save_task_plan_cache(agent_key: str, tasks: list[dict[str, Any]]) -> None:
+    path = get_task_plan_path(agent_key)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Section: planning pipeline helpers
 # ---------------------------------------------------------------------------
 
 def _apply_planning_guardrails(
     tasks: list[dict[str, Any]],
-    metadata: dict[str, Any] | None = None,
+    target_artifacts_source: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Normalize planner output into canonical runtime shape.
 
@@ -423,12 +448,16 @@ def _apply_planning_guardrails(
     """
     normalized = _guardrail_normalize_task_shape(tasks)
     renumbered = _guardrail_renumber_task_ids(normalized)
-    with_item_keys = _guardrail_assign_item_keys(renumbered, metadata=metadata)
+    with_item_keys = _guardrail_assign_item_keys(renumbered, target_artifacts_source=target_artifacts_source)
     return with_item_keys
 
 
 async def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Build raw task plan (pre-guardrails) and planning metrics."""
+    """Build raw task plan (pre-guardrails) and planning metrics.
+
+    Checks task_plan.json cache first. On cache miss, calls LLM and saves
+    the result so subsequent runs skip the LLM call entirely.
+    """
     user_input = state.get("user_input", "")
     if not user_input.strip():
         return (
@@ -444,9 +473,16 @@ async def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str,
             {},
         )
 
+    agent_key = state.get("agent_key") or ""
+    cached = _load_task_plan_cache(agent_key) if agent_key else None
+    if cached is not None:
+        return cached, {}
+
     task_plan, metric_planning = await _llm_plan(state)
     if not task_plan:
         task_plan = _fallback_task_plan(state)
+    elif agent_key:
+        _save_task_plan_cache(agent_key, task_plan)
     return task_plan, metric_planning
 
 
@@ -457,7 +493,7 @@ async def planning_node(state: AgentState) -> dict[str, Any]:
     # Phase 2: normalize plan into canonical runtime shape.
     task_plan = _apply_planning_guardrails(
         raw_task_plan,
-        metadata=state.get("metadata") if isinstance(state.get("metadata"), dict) else None,
+        target_artifacts_source=state.get("target_artifacts_source") or [],
     )
 
     # Phase 3: finalize planning state for downstream nodes.

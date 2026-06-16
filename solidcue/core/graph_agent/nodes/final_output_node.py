@@ -211,12 +211,7 @@ def _build_final_output_payload(state: AgentState) -> dict[str, Any] | None:
     if not successful_tool_history:
         return None
 
-    target_artifacts_source = []
-    metadata = state.get("metadata")
-    if isinstance(metadata, dict):
-        raw_sources = metadata.get("target_artifacts_source")
-        if isinstance(raw_sources, list):
-            target_artifacts_source = raw_sources
+    target_artifacts_source = state.get("target_artifacts_source") or []
 
     return {
         "user_input": str(state.get("user_input") or ""),

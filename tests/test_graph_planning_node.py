@@ -1,11 +1,14 @@
 """Tests for task planning node (Phase 3)."""
 
 import pytest
+import importlib as _il
 
 from solidcue.core.graph_agent.nodes.planning_node import (
     _guardrail_normalize_task_shape,
     planning_node,
 )
+
+planning_module = _il.import_module("solidcue.core.graph_agent.nodes.planning_node")
 
 
 @pytest.mark.asyncio
@@ -180,3 +183,62 @@ def test_planning_no_longer_sets_legacy_role_for_jd_tailoring() -> None:
 
     role_key = "evidence" + "_role"
     assert role_key not in tasks[0]
+
+
+@pytest.mark.asyncio
+async def test_planning_node_uses_cache_when_present(monkeypatch) -> None:
+    cached = [
+        {
+            "id": "task_1",
+            "type": "source_gathering",
+            "description": "Navigate to job posting URL",
+            "requires": ["job_page_loaded"],
+            "context": {"tool": "browser_navigate"},
+            "status": "pending",
+        }
+    ]
+    monkeypatch.setattr(planning_module, "_load_task_plan_cache", lambda _agent_key: cached)
+    llm_called = {"called": False}
+
+    async def _fake_llm(_state):
+        llm_called["called"] = True
+        return [], {}
+
+    monkeypatch.setattr(planning_module, "_llm_plan", _fake_llm)
+
+    result = await planning_node({"user_input": "Build me a resume", "agent_key": "resume_builder"})
+
+    assert not llm_called["called"]
+    assert result["task_plan"][0]["type"] == "source_gathering"
+    assert result["current_task"] == "task_1"
+
+
+@pytest.mark.asyncio
+async def test_planning_node_saves_cache_on_llm_miss(monkeypatch) -> None:
+    monkeypatch.setattr(planning_module, "_load_task_plan_cache", lambda _agent_key: None)
+    saved = {}
+
+    def _fake_save(agent_key, tasks):
+        saved["agent_key"] = agent_key
+        saved["tasks"] = tasks
+
+    monkeypatch.setattr(planning_module, "_save_task_plan_cache", _fake_save)
+
+    async def _fake_llm(_state):
+        return [
+            {
+                "id": "task_1",
+                "type": "source_gathering",
+                "description": "Gather sources",
+                "requires": ["source_collected"],
+                "status": "pending",
+            }
+        ], {}
+
+    monkeypatch.setattr(planning_module, "_llm_plan", _fake_llm)
+
+    await planning_node({"user_input": "Build me a resume", "agent_key": "resume_builder"})
+
+    assert saved.get("agent_key") == "resume_builder"
+    assert isinstance(saved.get("tasks"), list)
+    assert len(saved["tasks"]) == 1

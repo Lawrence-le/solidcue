@@ -152,9 +152,6 @@ async def decision_node(state: AgentState) -> dict[str, Any]:
 
     # 1. Build metadata with task context
     metadata = dict(state.get("metadata", {}))
-    # Keep decision prompts lean: planning/discovery-only source maps are not
-    # needed for decision execution once current_task context is resolved.
-    metadata.pop("target_artifacts_source", None)
     metadata["phase"] = phase
     task_plan = state.get("task_plan")
     current_task_id = state.get("current_task", "task_1")
@@ -192,6 +189,11 @@ async def decision_node(state: AgentState) -> dict[str, Any]:
         metadata=metadata,
         tool_call_history=scoped_tool_call_history,
         chat_history=state.get("chat_history") or [],
+        source_paths=state.get("source_paths") or [],
+        output_paths=state.get("output_paths") or [],
+        source_filenames=state.get("source_filenames") or [],
+        output_filenames=state.get("output_filenames") or [],
+        target_artifacts_source=state.get("target_artifacts_source") or [],
     )
     provider = get_provider_for_role(agent_config, "brain")
     output_text, metric_decision = await timed_async_stream_generate(provider, messages, node_name="decision")
