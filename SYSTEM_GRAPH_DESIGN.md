@@ -1,6 +1,6 @@
 # System Graph Design — Agent Creation Flow
 
-Status: **Planned** (not yet implemented)
+Status: **Implemented** (steps 1–7 complete — Option A interrupt landed)
 Source of truth for the `graph_system` upgrade and the new `graph_definition` graph.
 
 ---
@@ -43,6 +43,77 @@ via `graph_router` / `graph_agent`.
 `graph_system` does **not** write the MD files itself. It orchestrates: it calls
 `graph_definition` three times (persona / skill / tools), then writes the YAML
 config itself.
+
+### Who calls whom
+
+`graph_definition` is an **internal subgraph**. It is never invoked directly by
+the user or the router — **only `graph_system` calls it**:
+
+```
+user → graph_router / graph_system (entry)
+          └─ graph_system orchestrates create_agent
+               ├─ generate_persona_node ──calls──▶ build_persona_graph() ┐
+               ├─ generate_skill_node   ──calls──▶ build_skill_graph()   ├─ graph_definition
+               └─ generate_tools_node   ──calls──▶ build_tools_graph()   ┘
+          └─ graph_system write_config (YAML) → verify → final_output
+```
+
+This is why `graph_definition` is **not** registered in `langgraph.json` — nothing
+external reaches it.
+
+### Wiring style (REQUIRED — do not use the alternative)
+
+LangGraph allows two ways to run a subgraph from a parent. **Use style 1**, to
+match how `graph_router` already calls `graph_agent`:
+
+| Style | How | Use? |
+|---|---|---|
+| **1. Node invokes compiled subgraph** | `generate_*_node` calls `build_persona_graph()` then `.astream(...)`, collects the result into state | ✅ **Use this** — consistent with [`execute_plan_node._get_agent_graph`](solidcue/core/graph_router/nodes/execute_plan_node.py:36) |
+| 2. Subgraph added as a node | `graph.add_node("persona", build_persona_graph())` | ❌ Do not use — requires parent/child state keys to line up and diverges from the existing pattern |
+
+Under style 1 each `generate_*_node` owns the input it passes
+(`agent_key`, `agent_spec`, `definition_target`) and reads back
+`definition_content` / `definition_path` from the subgraph's final state, appending
+to `artifacts`. Cache the compiled subgraph per target (same as `_get_agent_graph`).
+
+### Router → graph_system wiring (create_agent from chat)
+
+The router reaches `graph_system` for the `create_agent` intent, so "create an
+agent" typed into normal chat runs the real flow:
+
+```
+user → graph_router → intent_router (classifies create_agent, seeds system_intent)
+          └─ create_agent_system  ◀── graph_system embedded as a SUBGRAPH NODE
+               (initialize → intent → collect_spec → … → verify → final_output)
+          └─ final_output
+```
+
+**This case uses style 2 (subgraph added as a node) — the opposite of
+`graph_definition` above — and that is deliberate.** `graph_system` *interrupts*
+(the create-agent form); `graph_definition` does not. Style 2 lets the child
+interrupt propagate to the parent run natively and lets `Command(resume=...)` flow
+back down. Style 1 (`.astream()` inside a node) would run the subgraph to
+completion and **swallow the interrupt**. Rule of thumb:
+
+| Subgraph interrupts? | Style |
+|---|---|
+| No (`graph_definition`) | Style 1 — node invokes `.astream()` |
+| Yes (`graph_system`) | Style 2 — `graph.add_node(name, compiled_subgraph)` |
+
+Requirements that make style 2 work here:
+- **Shared state channels.** `RouterState → SystemState → AgentState` inheritance
+  chain, so the create-agent channels (`agent_spec`, `artifacts`,
+  `created_agent_key`, `system_intent`, …) exist on the router's state and
+  round-trip across the boundary.
+- **No inner checkpointer / no `with_config`.** `build_system_subgraph()` compiles
+  bare so the parent owns checkpointing and the interrupt propagates.
+- **Upstream intent honored.** `intent_router_node` sets `system_intent =
+  "create_agent"`; `graph_system.intent_node` short-circuits on it instead of
+  re-classifying (which would misroute to `select_agent` when agents already
+  exist).
+
+`handoff_node` is now only the legacy no-plan fallback; `create_agent` no longer
+routes to it.
 
 ---
 
@@ -306,19 +377,72 @@ need its own server registration.
 
 ---
 
-## 8. Open decision — spec / API-key collection
+## 8. Spec / API-key collection — frontend-form-on-interrupt
 
-API keys cannot be invented, so the spec must come from the user.
+Each agent carries its own provider configs: **4 roles** (decision/brain, lite,
+reviewer, writer) × **5 fields** (provider_type, base_url, model, temperature,
+api_key). API keys cannot be invented and must not be typed into chat (they would
+be checkpointed). So `collect_spec_node` validates the **full `CreateAgentInput`**
+and, when incomplete, **interrupts with a form schema** the frontend renders as a
+secure create-agent form. Two paths coexist:
 
-- **Option A — `interrupt()` collection (chat / Server):** `collect_spec`
-  validates; if required fields are missing it raises `interrupt()` to ask the
-  user, resuming on reply. Natural for LangGraph Server human-in-the-loop.
-- **Option B — pre-supplied spec:** the frontend collects everything (the
-  existing `POST /agents` → `CreateAgentInput` already does this) and passes a
-  complete `agent_spec` in. Simpler; no interrupt machinery.
+- **Option B — pre-supplied spec:** `POST /agents` → complete `CreateAgentInput`
+  → no interrupt; validate and proceed.
+- **Option A — frontend form on interrupt:** an incomplete/invalid spec pauses
+  with a `collect_agent_spec` payload. The frontend renders the form (provider
+  inputs, API keys as password fields), then resumes with
+  `Command(resume={"agent_spec": {<full spec>}})`. The reply is merged and
+  re-validated; still-invalid → `final_output` error.
 
-**Plan:** build **B first** (reuses working REST collection, unblocks the
-artifact/config work), then layer **A** for the conversational path.
+### Validation
+
+Missing/invalid fields are derived by attempting `CreateAgentInput(**agent_spec)`
+and reading the `ValidationError` locations — no hand-maintained required list, so
+the gate never drifts from the model. `writer_*` is optional; everything else
+(incl. the three role `*_api_key`s and `selected_tools`) is required.
+
+### Interrupt payload contract
+
+```python
+interrupt({
+    "type": "collect_agent_spec",
+    "agent_spec": {...},              # what we have so far (pre-fill)
+    "invalid_fields": ["decision_api_key", "lite_model", ...],  # from ValidationError
+    "form_schema": {
+        "basic": ["name", "agent_key", "description", "selected_tools"],
+        "provider_roles": ["decision", "lite", "reviewer", "writer"],   # writer optional
+        "provider_fields": ["provider_type", "base_url", "model", "temperature", "api_key"],
+        "secret_fields": ["api_key"],          # frontend renders as password, never echoes
+        "provider_types": ["anthropic", "openai", "openrouter"],
+        "available_tools": [...],              # tool_keys from the tool registry
+    },
+    "message": "Fill in the agent details and provider settings.",
+})
+```
+
+### Secret hygiene
+
+`write_config_node` writes the API keys to the env store, then **scrubs every
+`*_api_key` field from `agent_spec`** before returning, so raw secrets do not
+persist in the checkpointed graph state.
+
+### Behavior summary
+
+| Incoming `agent_spec` | collect_spec result |
+|---|---|
+| Complete & valid | proceeds to generate_* (no interrupt) |
+| Missing/invalid fields | `interrupt()` with `form_schema` → resume merges + re-validates |
+| Still invalid after resume | `final_output` with "required fields missing or invalid" |
+
+Interrupt requires a checkpointer — provided by the server (`build_for_server`),
+the sync `SqliteSaver` (`build_system_graph`), or `InMemorySaver` in tests.
+
+### Frontend responsibility
+
+The frontend owns secure key entry and the resume payload. Keys flow through
+`Command(resume=...)` into state only transiently (scrubbed after `write_config`).
+If per-agent keys are not needed, a future option is to reference a workspace
+provider registry instead — out of scope here.
 
 ---
 
@@ -335,7 +459,7 @@ artifact/config work), then layer **A** for the conversational path.
 5. Rewire `graph_system/builder.py`: conditional routing on `system_intent`,
    parallel definition branch, fan-in. Add `build_for_server`.
 6. Register `system` in `langgraph.json`.
-7. (Follow-up) Option A interrupt-based collection.
+7. Option A interrupt-based collection in `collect_spec_node` (see §8). ✅ done
 
 ---
 

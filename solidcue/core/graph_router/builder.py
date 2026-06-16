@@ -82,12 +82,20 @@ def _route_after_initialize(_state: RouterState) -> Literal["intent_router"]:
 
 def _route_after_intent_router(
     state: RouterState,
-) -> Literal["execute_plan", "handoff", "final_output"]:
+) -> Literal["create_agent_system", "execute_plan", "handoff", "final_output"]:
+    # create_agent intent: keep conversing (final_output) until the router has
+    # gathered a ready spec (name + purpose). Once agent_spec is set, delegate to
+    # the system subgraph to actually build the agent.
+    if state.get("router_intent") == "create_agent":
+        spec = state.get("agent_spec")
+        if isinstance(spec, dict) and spec.get("agent_key") and spec.get("name"):
+            return "create_agent_system"
+        return "final_output"
     if state.get("router_next") == "handoff":
         # task intent with a plan → execute_plan (Wave 2 fan-out path)
         if state.get("plan"):
             return "execute_plan"
-        # create_agent or legacy no-plan route → old handoff stub
+        # legacy no-plan route → old handoff stub
         return "handoff"
     return "final_output"
 
@@ -100,13 +108,22 @@ def _route_after_execute_plan(_state: RouterState) -> Literal["final_output"]:
     return "final_output"
 
 
+def _route_after_create_agent_system(_state: RouterState) -> Literal["final_output"]:
+    return "final_output"
+
+
 def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
+    from solidcue.core.graph_system.builder import build_system_subgraph
+
     graph = StateGraph(RouterState)
 
     graph.add_node("initialize", initialize_router_node)
     graph.add_node("intent_router", intent_router_node)
     graph.add_node("execute_plan", execute_plan_node)
     graph.add_node("handoff", handoff_node)
+    # System graph embedded as a subgraph node: runs the create_agent flow and
+    # surfaces its form interrupt through this graph's run.
+    graph.add_node("create_agent_system", build_system_subgraph())
     graph.add_node("final_output", final_output_node)
 
     graph.set_entry_point("initialize")
@@ -115,6 +132,7 @@ def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
     graph.add_conditional_edges("intent_router", _route_after_intent_router)
     graph.add_conditional_edges("execute_plan", _route_after_execute_plan)
     graph.add_conditional_edges("handoff", _route_after_handoff)
+    graph.add_conditional_edges("create_agent_system", _route_after_create_agent_system)
     graph.add_edge("final_output", END)
 
     compiled = graph.compile(checkpointer=checkpointer)

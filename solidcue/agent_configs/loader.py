@@ -129,10 +129,11 @@ def _save_agent_markdown(
     content: str | None,
     default_content: str,
     label: str,
+    overwrite: bool = False,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    if path.exists():
+    if path.exists() and not overwrite:
         raise FileExistsError(f"Agent {label} already exists: {agent_key}")
 
     markdown_content = content if content is not None else default_content
@@ -142,33 +143,36 @@ def _save_agent_markdown(
     return path
 
 
-def save_agent_persona(agent_key: str, content: str | None = None) -> Path:
+def save_agent_persona(agent_key: str, content: str | None = None, *, overwrite: bool = False) -> Path:
     return _save_agent_markdown(
         agent_key=agent_key,
         path=get_persona_path(agent_key),
         content=content,
         default_content=DEFAULT_PERSONA_TEMPLATE,
         label="persona",
+        overwrite=overwrite,
     )
 
 
-def save_agent_skill(agent_key: str, content: str | None = None) -> Path:
+def save_agent_skill(agent_key: str, content: str | None = None, *, overwrite: bool = False) -> Path:
     return _save_agent_markdown(
         agent_key=agent_key,
         path=get_skill_path(agent_key),
         content=content,
         default_content=DEFAULT_SKILL_TEMPLATE,
         label="skill",
+        overwrite=overwrite,
     )
 
 
-def save_agent_tools(agent_key: str, content: str | None = None) -> Path:
+def save_agent_tools(agent_key: str, content: str | None = None, *, overwrite: bool = False) -> Path:
     return _save_agent_markdown(
         agent_key=agent_key,
         path=get_tools_path(agent_key),
         content=content,
         default_content=DEFAULT_TOOLS_TEMPLATE,
         label="tools",
+        overwrite=overwrite,
     )
 
 

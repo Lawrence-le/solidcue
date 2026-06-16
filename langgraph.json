@@ -2,7 +2,8 @@
   "dependencies": ["."],
   "graphs": {
     "agent": "solidcue.core.graph_agent.builder:build_for_server",
-    "router": "solidcue.core.graph_router.builder:build_for_server"
+    "router": "solidcue.core.graph_router.builder:build_for_server",
+    "system": "solidcue.core.graph_system.builder:build_for_server"
   },
   "env": ".env"
 }

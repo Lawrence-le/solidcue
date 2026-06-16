@@ -59,7 +59,8 @@ def _build_provider_config(
     )
 
 
-def create_agent(input_data: CreateAgentInput) -> tuple[AgentConfig, str]:
+def _build_agent_config_and_env(input_data: "CreateAgentInput") -> tuple[AgentConfig, str, str, str, str]:
+    """Build AgentConfig and write env keys. Returns (config, brain_env, lite_env, reviewer_env, writer_env)."""
     brain_env_key = generate_env_key(f"{input_data.agent_key}_brain")
     lite_env_key = generate_env_key(f"{input_data.agent_key}_lite")
     reviewer_env_key = generate_env_key(f"{input_data.agent_key}_reviewer")
@@ -115,6 +116,19 @@ def create_agent(input_data: CreateAgentInput) -> tuple[AgentConfig, str]:
         writer_provider=writer_provider,
         tools=input_data.selected_tools,
     )
+    return config, brain_env_key, lite_env_key, reviewer_env_key, writer_env_key
+
+
+def write_agent_config(input_data: "CreateAgentInput") -> tuple[AgentConfig, str]:
+    """Write env keys and YAML config only — no MD files. Called by graph_system write_config_node."""
+    config, *_ = _build_agent_config_and_env(input_data)
+    path = save_agent(config)
+    return config, str(path)
+
+
+def create_agent(input_data: "CreateAgentInput") -> tuple[AgentConfig, str]:
+    """Write env keys, YAML config, and default MD templates. Called by REST/CLI paths."""
+    config, *_ = _build_agent_config_and_env(input_data)
     path = save_agent(config)
     save_agent_persona(config.agent_key)
     save_agent_skill(config.agent_key)

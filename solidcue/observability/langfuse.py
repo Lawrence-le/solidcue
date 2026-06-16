@@ -200,20 +200,62 @@ def start_langfuse_span(
             yield None
         return
 
+    observation_kwargs: dict[str, Any] = {
+        "name": name,
+        "as_type": "span",
+        "input": input_payload,
+        "metadata": metadata or None,
+    }
+
+    # When there is no active OTEL span (e.g. a parallel LangGraph branch that
+    # lost the parent context), attach to the run's trace via the run_id-derived
+    # trace_context + session, so the span nests under the same trace instead of
+    # starting a new root one. Mirrors start_langfuse_generation.
+    attributes_context = None
     try:
-        context = _LANGFUSE_CLIENT.start_as_current_observation(
-            name=name,
-            as_type="span",
-            input=input_payload,
-            metadata=metadata or None,
-        )
+        trace_attributes = None
+        try:
+            if _LANGFUSE_CLIENT.get_current_trace_id() is None:
+                trace_attributes = _current_langgraph_trace_attributes()
+        except Exception:
+            trace_attributes = None
+
+        if trace_attributes is not None:
+            trace_context = trace_attributes.get("trace_context")
+            if isinstance(trace_context, dict):
+                observation_kwargs["trace_context"] = trace_context
+
+            trace_name = trace_attributes.get("trace_name")
+            session_id = trace_attributes.get("session_id")
+            if isinstance(trace_name, str) or isinstance(session_id, str):
+                from langfuse import propagate_attributes
+
+                attributes_context = propagate_attributes(
+                    trace_name=trace_name if isinstance(trace_name, str) else None,
+                    session_id=session_id if isinstance(session_id, str) else None,
+                )
+                attributes_context.__enter__()
+
+        context = _LANGFUSE_CLIENT.start_as_current_observation(**observation_kwargs)
     except Exception:
+        if attributes_context is not None:
+            try:
+                attributes_context.__exit__(None, None, None)
+            except Exception:
+                pass
         with nullcontext():
             yield None
         return
 
-    with context as span:
-        yield span
+    try:
+        with context as span:
+            yield span
+    finally:
+        if attributes_context is not None:
+            try:
+                attributes_context.__exit__(None, None, None)
+            except Exception:
+                pass
 
 
 def start_langfuse_generation(

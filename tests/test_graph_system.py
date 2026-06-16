@@ -20,26 +20,31 @@ def test_system_initialize_reports_empty_workspace(monkeypatch) -> None:
     assert result["system_intent"] == "bootstrap"
 
 
-def test_system_graph_guides_agent_creation_when_workspace_is_empty(monkeypatch) -> None:
+def test_system_graph_routes_create_agent_to_collect_spec_when_no_spec(monkeypatch) -> None:
+    """When create_agent intent fires but no agent_spec is supplied, collect_spec
+    pauses (Option A interrupt) to ask the user for the missing fields."""
     monkeypatch.setattr(initialize_module, "get_agents", lambda: [])
     monkeypatch.setattr(initialize_module, "list_agent_keys", lambda: [])
 
+    from uuid import uuid4
+
     graph = build_system_graph()
+    thread_id = f"thread-collect-{uuid4()}"
     result = graph.invoke(
         {
-            "thread_id": "thread-1",
+            "thread_id": thread_id,
             "conversation_id": "conversation-1",
             "user_input": "I want to set up the workspace",
             "metadata": {},
         },
-        config={"configurable": {"thread_id": "thread-1"}},
+        config={"configurable": {"thread_id": thread_id}},
     )
 
     assert result["system_intent"] == "create_agent"
-    assert "No agents are configured yet" in result["final_response"]
     assert result["system_skill_key"] == "create-agent"
-    assert result["system_skill_path"].endswith("create-agent.md")
-    assert "Create Agent Skill" in result["system_skill"]
+    assert "__interrupt__" in result
+    assert result["__interrupt__"][0].value["type"] == "collect_agent_spec"
+    assert not result.get("created_agent_key")
 
 
 def test_system_graph_guides_selection_when_agents_exist(monkeypatch) -> None:

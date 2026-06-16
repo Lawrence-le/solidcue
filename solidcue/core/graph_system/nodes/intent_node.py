@@ -27,6 +27,22 @@ def _looks_like_setup_request(user_input: str) -> bool:
 def intent_node(state: SystemState) -> dict[str, object]:
     """Classify the no-agent-key workflow into a bootstrap-oriented intent."""
     user_input = str(state.get("user_input") or "").strip()
+
+    # Honor a create_agent decision already made upstream (e.g. the router
+    # delegating into this graph as a subgraph). Without this, re-classification
+    # here could misroute to select_agent when the workspace already has agents.
+    if state.get("system_intent") == "create_agent":
+        message = "I can help create a new agent."
+        return {
+            "system_intent": "create_agent",
+            "system_next": "final_output",
+            "route_reason": "Agent creation requested.",
+            "assistant_draft": message,
+            "system_skill_key": resolve_system_skill_key("create_agent"),
+            "system_skill_path": str(get_system_skill_path("create_agent")),
+            "system_skill": load_system_skill("create_agent"),
+        }
+
     if not user_input:
         system_intent = "bootstrap"
         skill_key = resolve_system_skill_key(system_intent)

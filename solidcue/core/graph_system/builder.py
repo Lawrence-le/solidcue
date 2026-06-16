@@ -8,8 +8,17 @@ from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
 
-from solidcue.core.graph_system.nodes import final_output_node, initialize_node, intent_node
-from solidcue.core.graph_system.state.schema import SystemState
+from solidcue.core.graph_system.nodes import (
+    collect_spec_node,
+    final_output_node,
+    generate_definitions_node,
+    initialize_node,
+    intent_node,
+    select_tools_node,
+    verify_node,
+    write_config_node,
+)
+from solidcue.core.graph_system.state.schema import SystemState, SystemSubgraphOutput
 
 
 def _resolve_recursion_limit() -> int:
@@ -74,24 +83,72 @@ def _route_after_initialize(_state: SystemState) -> Literal["intent"]:
     return "intent"
 
 
-def _route_after_intent(_state: SystemState) -> Literal["final_output"]:
+def _route_after_intent(state: SystemState) -> str:
+    if state.get("system_intent") == "create_agent":
+        return "collect_spec"
     return "final_output"
 
 
-def _compile_graph(checkpointer: Any) -> Any:
-    graph = StateGraph(SystemState)
+def _route_after_collect_spec(state: SystemState) -> str:
+    # collect_spec sets created_agent_key on success; if missing, it set an error.
+    if not state.get("created_agent_key"):
+        return "final_output"
+    return "select_tools"
 
-    graph.add_node("initialize", initialize_node)
-    graph.add_node("intent", intent_node)
-    graph.add_node("final_output", final_output_node)
+
+def _assemble_graph() -> StateGraph:
+    """Build the system StateGraph (nodes + edges) without compiling."""
+    graph = StateGraph(SystemState, output_schema=SystemSubgraphOutput)
+
+    graph.add_node("initialize",           initialize_node)
+    graph.add_node("intent",               intent_node)
+    graph.add_node("collect_spec",         collect_spec_node)
+    # select_tools picks registry tools for the agent (graph_system's own LLM node);
+    # generate_definitions writes persona/skill/tools sequentially under one span.
+    graph.add_node("select_tools",         select_tools_node)
+    graph.add_node("generate_definitions", generate_definitions_node)
+    graph.add_node("write_config",         write_config_node)
+    graph.add_node("verify",               verify_node)
+    graph.add_node("final_output",         final_output_node)
 
     graph.set_entry_point("initialize")
+
     graph.add_conditional_edges("initialize", _route_after_initialize)
     graph.add_conditional_edges("intent", _route_after_intent)
+    graph.add_conditional_edges("collect_spec", _route_after_collect_spec)
+
+    graph.add_edge("select_tools", "generate_definitions")
+    graph.add_edge("generate_definitions", "write_config")
+    graph.add_edge("write_config", "verify")
+    graph.add_edge("verify",       "final_output")
     graph.add_edge("final_output", END)
 
-    compiled = graph.compile(checkpointer=checkpointer)
-    return compiled.with_config({"recursion_limit": _resolve_recursion_limit()})
+    return graph
+
+
+def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
+    compiled = _assemble_graph().compile(checkpointer=checkpointer)
+    cfg: dict[str, Any] = {"recursion_limit": _resolve_recursion_limit()}
+    if session_id:
+        cfg["metadata"] = {
+            "langfuse_session_id": session_id,
+            "langfuse_trace_name": "solidcue:system",
+        }
+    from solidcue.observability.langfuse import get_langfuse_callbacks
+
+    callbacks = get_langfuse_callbacks()
+    if callbacks:
+        cfg["callbacks"] = callbacks
+    return compiled.with_config(cfg)
+
+
+def build_system_subgraph() -> Any:
+    """Compiled system graph for embedding as a node in a parent graph.
+
+    No checkpointer (the parent owns checkpointing) and no ``with_config`` wrapper,
+    so the create-agent form interrupt propagates natively up to the parent run.
+    """
+    return _assemble_graph().compile()
 
 
 async def build_async_system_graph() -> Any:
@@ -101,3 +158,13 @@ async def build_async_system_graph() -> Any:
 
 def build_system_graph() -> Any:
     return _compile_graph(_build_checkpointer())
+
+
+async def build_for_server(config: Any) -> Any:
+    """LangGraph Server graph factory for the system graph.
+
+    The server injects its own checkpointer; we compile without one.
+    """
+    configurable = (config or {}).get("configurable") or {}
+    thread_id: str | None = configurable.get("thread_id") or None
+    return _compile_graph(checkpointer=None, session_id=thread_id)

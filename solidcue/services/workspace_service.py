@@ -68,6 +68,10 @@ def resolve_system_skill_key(system_intent: str) -> str:
         return "create-agent"
     if normalized in {"create-skill", "create skill", "skill"}:
         return "create-skill"
+    if normalized in {"create-persona", "create persona", "persona"}:
+        return "create-persona"
+    if normalized in {"create-tools", "create tools", "tools"}:
+        return "create-tools"
     if normalized in {"setup-provider", "provider", "repair-config", "import-agent", "select-agent"}:
         return "user-profile"
     return "user-profile"

@@ -62,6 +62,20 @@ def _normalize_plan(
     return plan
 
 
+def _build_create_agent_reply(*, agent_ready: bool = False) -> str:
+    if agent_ready:
+        return (
+            "**Agent details received**\n\n"
+            "I'm ready to create it now."
+        )
+    return (
+        "**Yes, I can help with that**\n\n"
+        "What I need:\n"
+        "- What should the agent do?\n"
+        "- What would you like to call it?\n"
+    )
+
+
 async def intent_router_node(
     state: RouterState,
     *,
@@ -113,6 +127,7 @@ async def intent_router_node(
         user_input=user_input,
         chat_history=state.get("chat_history"),
         available_agents=available_agents,
+        metadata=state.get("metadata"),
     )
 
     try:
@@ -207,7 +222,7 @@ async def intent_router_node(
     raw_sources = parsed.get("target_artifacts_source")
     target_artifacts_source = raw_sources if isinstance(raw_sources, list) else []
 
-    return {
+    result: dict[str, object] = {
         "router_intent": router_intent,
         "router_next": router_next,
         "route_reason": route_reason,
@@ -218,3 +233,27 @@ async def intent_router_node(
         "handoff": handoff if isinstance(handoff, dict) else {},
         "target_artifacts_source": target_artifacts_source,
     }
+
+    # create_agent: once the model signals it has gathered a name + purpose, seed
+    # the system graph so the embedded subgraph runs the actual build. Until then
+    # the router just keeps conversing.
+    if router_intent == "create_agent":
+        raw_spec = parsed.get("agent_spec")
+        agent_ready = bool(parsed.get("agent_ready")) and isinstance(raw_spec, dict)
+        result["assistant_draft"] = _build_create_agent_reply(agent_ready=agent_ready)
+        result["final_response"] = result["assistant_draft"]
+        if agent_ready:
+            name = normalize_text(raw_spec.get("name"))
+            agent_key = normalize_text(raw_spec.get("agent_key"))
+            description = normalize_text(raw_spec.get("description"))
+            # Tool selection is handled by graph_system's select_tools node — the
+            # router only gathers name/purpose.
+            if name and agent_key and description:
+                result["agent_spec"] = {
+                    "name": name,
+                    "agent_key": agent_key,
+                    "description": description,
+                }
+                result["system_intent"] = "create_agent"
+
+    return result

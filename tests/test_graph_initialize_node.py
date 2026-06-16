@@ -1,4 +1,5 @@
 import importlib
+from types import SimpleNamespace
 
 from solidcue.core.graph_agent.nodes.initialize_node import initialize_node
 
@@ -90,6 +91,18 @@ def test_initialize_uses_env_default_timezone_when_config_missing(monkeypatch) -
     result = initialize_node({})
 
     assert result["metadata"]["timezone"] == "Asia/Singapore"
+
+
+def test_initialize_uses_profile_location_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(
+        initialize_module,
+        "load_user_profile",
+        lambda: SimpleNamespace(location="Singapore"),
+    )
+
+    result = initialize_node({"metadata": {}, "config": {}})
+
+    assert result["metadata"]["location"] == "Singapore"
 
 
 def test_initialize_falls_back_max_retries_to_three() -> None:

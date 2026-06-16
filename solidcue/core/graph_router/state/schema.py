@@ -3,11 +3,17 @@ from __future__ import annotations
 from typing import Any, Literal, TypedDict, Annotated
 import operator
 
-from solidcue.core.graph_agent.state.schema import AgentState
+from solidcue.core.graph_system.state.schema import SystemState
 
 
-class RouterState(AgentState, total=False):
-    """State for the user-facing router graph."""
+class RouterState(SystemState, total=False):
+    """State for the user-facing router graph.
+
+    Inherits SystemState (which inherits AgentState) so the router can run the
+    system graph as a subgraph node for the create_agent intent: the system
+    graph's create-agent channels (agent_spec, artifacts, created_agent_key, …)
+    live on the shared state, and the form interrupt propagates up natively.
+    """
 
     # Router intent:
     # - chat: answer directly as a normal conversation

@@ -242,18 +242,18 @@ function ApprovalCard({
 
 function NodeRail({
   events,
-  showResumingPlaceholder,
+  emptyStateLabel,
 }: {
   events: NodeEvent[];
-  showResumingPlaceholder: boolean;
+  emptyStateLabel: string | null;
 }) {
   if (events.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center px-4 text-center">
-        {showResumingPlaceholder ? (
+        {emptyStateLabel ? (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-            <span>Resuming... node events will appear shortly.</span>
+            <span>{emptyStateLabel} node events will appear shortly.</span>
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">
@@ -546,6 +546,7 @@ export function SessionsPage() {
   const nodeRailWidthRef = useRef(nodeRailWidth);
   const preserveNodeTimelineOnStartRef = useRef(false);
   const reconnectStatusMessageIdRef = useRef<string | null>(null);
+  const isRejoiningRunRef = useRef(false);
   // LangGraph Server thread ID for the current conversation (different from the
   // conversation UUID used as the URL param — see lgClient.ts for the mapping).
   const lgThreadIdRef = useRef<string | null>(null);
@@ -565,6 +566,7 @@ export function SessionsPage() {
     const persisted = loadPersistedRun(lgThreadId);
     if (!persisted) return;
 
+    isRejoiningRunRef.current = true;
     lgThreadIdRef.current = lgThreadId;
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -871,6 +873,7 @@ export function SessionsPage() {
         setLiveWorkedSeconds(0);
         setTimerVersion(0);
         runStartedAtRef.current = null;
+        isRejoiningRunRef.current = false;
       }
       return;
     }
@@ -899,6 +902,7 @@ export function SessionsPage() {
     setLiveWorkedSeconds(0);
     setTimerVersion(0);
     runStartedAtRef.current = null;
+    isRejoiningRunRef.current = false;
 
     // If there's an in-progress LangGraph run for this conversation, skip the
     // snapshot load — the rejoin useEffect will stream the missing events and
@@ -1152,6 +1156,7 @@ export function SessionsPage() {
         finalizeWorkedTimer();
         setThreadId(e.data.thread_id);
         abortRef.current = null;
+        isRejoiningRunRef.current = false;
         addMessage({
           role: "interrupt",
           payload: e.data.interrupt,
@@ -1166,6 +1171,7 @@ export function SessionsPage() {
         setRunState("completed");
         finalizeWorkedTimer();
         abortRef.current = null;
+        isRejoiningRunRef.current = false;
         finalizeStreamingAssistant(e.data.output);
         qc.invalidateQueries({ queryKey: ["threads"] });
         if (conversationId) {
@@ -1179,6 +1185,7 @@ export function SessionsPage() {
         setResumable(true);
         streamingAssistantIdRef.current = null;
         abortRef.current = null;
+        isRejoiningRunRef.current = false;
         setNodeEvents([]);
         if (conversationId) {
           void loadConversationMetadata(conversationId);
@@ -1189,6 +1196,7 @@ export function SessionsPage() {
         finalizeWorkedTimer();
         streamingAssistantIdRef.current = null;
         abortRef.current = null;
+        isRejoiningRunRef.current = false;
         addMessage({ role: "error", content: e.data.message });
         setNodeEvents([]);
         if (conversationId) {
@@ -1222,6 +1230,7 @@ export function SessionsPage() {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    isRejoiningRunRef.current = true;
     setRunState("streaming");
     setResumable(false);
     preserveNodeTimelineOnStartRef.current = true;
@@ -1258,6 +1267,7 @@ export function SessionsPage() {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    isRejoiningRunRef.current = false;
     setRunState("streaming");
     preserveNodeTimelineOnStartRef.current = preserveNodeTimeline;
     if (!preserveNodeTimeline) {
@@ -1362,6 +1372,12 @@ export function SessionsPage() {
 
   const streaming = runState === "streaming";
   const taskRunning = streaming || runState === "disconnected";
+  const streamingEmptyStateLabel =
+    streaming && nodeEvents.length === 0
+      ? isRejoiningRunRef.current
+        ? "Resuming..."
+        : "Starting..."
+      : null;
   const displayedWorkedSeconds =
       streaming
         ? (workedSeconds ?? 0) + liveWorkedSeconds
@@ -1495,12 +1511,12 @@ export function SessionsPage() {
                   </div>
                 )}
 
-                {streaming && nodeEvents.length === 0 && (
+                {streamingEmptyStateLabel && (
                   <div className="px-1">
                     <div className="flex items-center gap-1.5">
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                       <span className="text-[11px] text-muted-foreground/75">
-                        Resuming...
+                        {streamingEmptyStateLabel}
                       </span>
                     </div>
                   </div>
@@ -1635,7 +1651,7 @@ export function SessionsPage() {
           <div className="flex-1 min-h-0 overflow-y-auto [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/80 [&::-webkit-scrollbar-track]:bg-transparent">
             <NodeRail
               events={nodeEvents}
-              showResumingPlaceholder={streaming && nodeEvents.length === 0}
+              emptyStateLabel={streamingEmptyStateLabel}
             />
             <div ref={nodeRailEndRef} />
           </div>

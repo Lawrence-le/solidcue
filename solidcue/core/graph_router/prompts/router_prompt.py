@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from solidcue.core.graph_router.prompts.router_system_prompt import build_router_system_prompt
 
 
@@ -33,16 +36,28 @@ def _format_agents(available_agents: list[dict[str, str]]) -> str:
     return "\n".join(lines) if lines else "None"
 
 
+def _format_metadata(metadata: dict[str, Any] | None) -> str:
+    if not isinstance(metadata, dict) or not metadata:
+        return "None"
+    try:
+        return json.dumps(metadata, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(metadata)
+
+
 def build_router_messages(
     *,
     user_input: str,
     chat_history: list[dict[str, str]] | None,
     available_agents: list[dict[str, str]],
+    metadata: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     runtime_context = (
         "=== RUNTIME CONTEXT ===\n"
         "AVAILABLE_AGENTS:\n"
         f"{_format_agents(available_agents)}\n\n"
+        "METADATA:\n"
+        f"{_format_metadata(metadata)}\n\n"
         "CHAT_HISTORY:\n"
         f"{_format_chat_history(chat_history)}\n\n"
         "CURRENT_USER_INPUT:\n"
