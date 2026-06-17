@@ -88,8 +88,6 @@ def initialize_node(state: AgentState, config: Any = None) -> dict[str, Any]:
         "max_retries": max_retries,
         "phase": state.get("phase") or "source",
         "failure_type": state.get("failure_type"),
-        "worked_seconds": int(state.get("worked_seconds") or 0),
-        "timer_started_at": state.get("timer_started_at"),
         "source_attempt": int(state.get("source_attempt", 0)),
         "artifact_attempt": int(state.get("artifact_attempt", 0)),
         "synthesis_attempt": int(state.get("synthesis_attempt", 0)),

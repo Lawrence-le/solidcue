@@ -690,22 +690,6 @@ export function SessionsPage() {
     },
   });
 
-  const loadConversationMetadata = useCallback(
-    async (targetConversationId: string) => {
-      const stateRes = await api.conversationLiveState(targetConversationId, [
-        "worked_seconds",
-        "timer_started_at",
-      ]);
-      const worked = Number(stateRes.state.worked_seconds ?? 0);
-      setWorkedSeconds(Number.isFinite(worked) ? worked : 0);
-      const timerStartedAt = stateRes.state.timer_started_at;
-      runStartedAtRef.current =
-        typeof timerStartedAt === "number" ? timerStartedAt * 1000 : null;
-      return stateRes;
-    },
-    [],
-  );
-
   const loadConversationSnapshot = useCallback(
     async (
       targetConversationId: string,
@@ -797,8 +781,6 @@ export function SessionsPage() {
       if (stateRes.thread_id && typeof stateRes.thread_id === "string")
         setThreadId(stateRes.thread_id);
       if (runRes.run_id) setRunId(runRes.run_id);
-      const worked = Number(state.worked_seconds ?? 0);
-      setWorkedSeconds(Number.isFinite(worked) ? worked : 0);
       runStartedAtRef.current = null;
       setMessages(msgs);
       setRunState(
@@ -835,19 +817,9 @@ export function SessionsPage() {
 
   // Load conversation when ?conversation= param changes
   const conversationParam = searchParams.get("conversation");
-  const legacyThreadParam = searchParams.get("thread");
-  const agentParam = searchParams.get("agent");
   useEffect(() => {
-    if (agentParam) setAgentKey(agentParam);
     if (!conversationParam) {
       if (pendingConversationIdRef.current) return;
-      if (legacyThreadParam && legacyThreadParam !== conversationId) {
-        const nextParams = new URLSearchParams();
-        nextParams.set("conversation", legacyThreadParam);
-        if (agentParam) nextParams.set("agent", agentParam);
-        navigate(`/sessions?${nextParams.toString()}`, { replace: true });
-        return;
-      }
 
       if (
         conversationId ||
@@ -927,10 +899,8 @@ export function SessionsPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    agentParam,
     conversationParam,
     conversationId,
-    legacyThreadParam,
     loadConversationSnapshot,
     navigate,
     nodeEvents.length,
@@ -1062,9 +1032,7 @@ export function SessionsPage() {
         }
         preserveNodeTimelineOnStartRef.current = false;
         ensureStreamingAssistantMessage();
-        if (e.data.agent_key && e.data.agent_key !== "router") {
-          beginWorkedTimer();
-        }
+        beginWorkedTimer();
       } else if (e.event === "message_start") {
         ensureStreamingAssistantMessage();
       } else if (e.event === "message_delta") {
@@ -1097,14 +1065,6 @@ export function SessionsPage() {
             },
           ];
         });
-      } else if (e.event === "handoff") {
-        // Legacy single-agent handoff. The orchestrator now emits `subagent`
-        // events instead; kept for backward compatibility.
-        setAgentKey(e.data.target_agent_key);
-        setThreadId(e.data.agent_thread_id);
-        setWorkedSeconds(0);
-        setLiveWorkedSeconds(0);
-        runStartedAtRef.current = null;
       } else if (e.event === "plan") {
         // The router (manager) announces what it will do before any worker runs.
         // Pre-populate every step as pending so the user sees the full plan upfront.
@@ -1162,9 +1122,6 @@ export function SessionsPage() {
           payload: e.data.interrupt,
           threadId: e.data.thread_id,
         });
-        if (conversationId) {
-          void loadConversationMetadata(conversationId);
-        }
       } else if (e.event === "completed") {
         removeReconnectStatusMessage();
         setNodeEvents((prev) => prev.map((ev) => ({ ...ev, status: "done" })));
@@ -1174,9 +1131,6 @@ export function SessionsPage() {
         isRejoiningRunRef.current = false;
         finalizeStreamingAssistant(e.data.output);
         qc.invalidateQueries({ queryKey: ["threads"] });
-        if (conversationId) {
-          void loadConversationMetadata(conversationId);
-        }
       } else if (e.event === "cancelled") {
         removeReconnectStatusMessage();
         setNodeEvents((prev) => prev.map((ev) => ({ ...ev, status: "done" })));
@@ -1187,9 +1141,6 @@ export function SessionsPage() {
         abortRef.current = null;
         isRejoiningRunRef.current = false;
         setNodeEvents([]);
-        if (conversationId) {
-          void loadConversationMetadata(conversationId);
-        }
       } else if (e.event === "error") {
         removeReconnectStatusMessage();
         setRunState("error");
@@ -1199,16 +1150,12 @@ export function SessionsPage() {
         isRejoiningRunRef.current = false;
         addMessage({ role: "error", content: e.data.message });
         setNodeEvents([]);
-        if (conversationId) {
-          void loadConversationMetadata(conversationId);
-        }
       }
     },
     [
       beginWorkedTimer,
       conversationId,
       finalizeWorkedTimer,
-      loadConversationMetadata,
       nodeEvents,
       qc,
     ],
@@ -1338,11 +1285,6 @@ export function SessionsPage() {
     startRun(text, undefined, false);
   }
 
-  // handleResume is wired to ApprovalCard (interrupt UI). NodeInterrupt is never
-  // raised in any graph node, so this function is never called in practice.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  function handleResume(_value: string) {}
-
   async function handleStop() {
     stopIntentionalRef.current = true;
     abortRef.current?.abort();
@@ -1382,7 +1324,7 @@ export function SessionsPage() {
       streaming
         ? (workedSeconds ?? 0) + liveWorkedSeconds
         : workedSeconds;
-  const showWorkedTimer = agentKey !== "router" && displayedWorkedSeconds !== null;
+  const showWorkedTimer = agentKey !== "router" && !!displayedWorkedSeconds;
   const providerMeta = PROVIDER_META[routerRole.provider_type];
   const currentModelLabel = modelLabelForValue(routerRole.model);
   const canSend =
@@ -1461,7 +1403,7 @@ export function SessionsPage() {
                   {msg.role === "interrupt" && (
                     <ApprovalCard
                       payload={msg.payload}
-                      onSubmit={handleResume}
+                      onSubmit={() => {}}
                       disabled={runState !== "interrupted"}
                     />
                   )}

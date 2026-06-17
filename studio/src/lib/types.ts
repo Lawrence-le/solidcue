@@ -135,21 +135,6 @@ export interface LiveStateResponse {
   state: Record<string, unknown>
 }
 
-export interface ConversationThreadResponse {
-  conversation_id: string
-  thread_id: string | null
-}
-
-export interface ConversationMetadataResponse {
-  conversation_id: string
-  agent_key: string | null
-  worked_seconds: number
-  last_thread_id: string | null
-  last_run_id: string | null
-  last_run_status: "idle" | "running" | "interrupted" | "completed" | "error" | "cancelled" | "disconnected" | null
-  created_at: string | null
-  updated_at: string | null
-}
 
 export interface RunStatusResponse {
   thread_id: string

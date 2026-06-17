@@ -27,8 +27,6 @@ _EXAMPLE_STATE: dict[str, Any] = {
     "conversation_id": "example_conversation",
     "user_input": "Example user input",
     "config": {"location": "example-location"},
-    "worked_seconds": 0,
-    "timer_started_at": None,
     "metadata": {
         "source_paths": ["example/source"],
         "output_paths": ["example/output"],
@@ -185,8 +183,6 @@ def load_conversation_metadata(conversation_id: str) -> dict[str, Any]:
     return {
         "conversation_id": normalized_conversation_id,
         "agent_key": None,
-        "worked_seconds": 0,
-        "timer_started_at": None,
         "last_thread_id": None,
         "last_run_id": None,
         "last_run_status": None,
@@ -205,8 +201,6 @@ async def load_conversation_snapshot(conversation_id: str) -> dict[str, Any]:
         return {
             "conversation_id": normalized,
             "agent_key": values.get("target_agent_key") or values.get("agent_key") or None,
-            "worked_seconds": int(values.get("worked_seconds") or 0),
-            "timer_started_at": None,
             "last_thread_id": lg_thread_id,
             "last_run_id": None,
             "last_run_status": None,
@@ -218,8 +212,6 @@ async def load_conversation_snapshot(conversation_id: str) -> dict[str, Any]:
     return {
         "conversation_id": normalized,
         "agent_key": None,
-        "worked_seconds": 0,
-        "timer_started_at": None,
         "last_thread_id": None,
         "last_run_id": None,
         "last_run_status": None,

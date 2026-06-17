@@ -18,9 +18,6 @@ class AgentState(TypedDict, total=False):
     user_input: str
     config: dict[str, Any]
     metadata: dict[str, Any]
-    worked_seconds: int
-    timer_started_at: float | None
-
     # --- Message state ---
     messages: Annotated[list[dict[str, Any]], operator.add]
     chat_history: Annotated[list[dict[str, Any]], operator.add]

@@ -53,8 +53,6 @@ def initialize_router_node(state: RouterState) -> dict[str, Any]:
     updates: dict[str, Any] = {}
     if conversation_id:
         updates["conversation_id"] = conversation_id
-    updates["worked_seconds"] = int(state.get("worked_seconds") or 0)
-    updates["timer_started_at"] = state.get("timer_started_at")
     updates["metadata"] = _resolve_router_metadata(state)
 
     # Append the user's turn to the persisted chat_history channel (operator.add).

@@ -27,7 +27,6 @@ from solidcue.services.state_snapshot_service import (
     get_thread_interrupt_payload,
     is_conversation_resumable,
     list_agent_state_keys,
-    load_live_state_for_conversation,
 )
 from pydantic import BaseModel
 
@@ -100,18 +99,11 @@ async def latest_thread_for_conversation(conversation_id: str) -> ConversationSu
 )
 async def conversation_metadata(conversation_id: str) -> ConversationMetadataResponse:
     payload = load_conversation_metadata(conversation_id)
-    live_state = await load_live_state_for_conversation(conversation_id)
-    worked_seconds = live_state.get("worked_seconds")
     return ConversationMetadataResponse(
         conversation_id=payload.get("conversation_id", conversation_id),
         agent_key=payload.get("agent_key")
         if isinstance(payload.get("agent_key"), str)
         else None,
-        worked_seconds=(
-            int(worked_seconds)
-            if isinstance(worked_seconds, (int, float))
-            else 0
-        ),
         last_thread_id=payload.get("last_thread_id")
         if isinstance(payload.get("last_thread_id"), str)
         else None,
