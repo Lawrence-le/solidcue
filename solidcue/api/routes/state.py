@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, HTTPException, Query, Response
 
 from solidcue.api.schemas import (
@@ -30,20 +28,10 @@ from solidcue.services.state_snapshot_service import (
     is_conversation_resumable,
     list_agent_state_keys,
     load_live_state_for_conversation,
-    resolve_checkpoint_db_path,
 )
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/state", tags=["state"])
-
-
-def _connect_checkpoint_db() -> sqlite3.Connection:
-    db_path = resolve_checkpoint_db_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=1.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout = 1000")
-    return conn
 
 
 class ThreadSummary(BaseModel):
@@ -94,15 +82,15 @@ def state_keys() -> list[str]:
 
 
 @router.get("/latest-thread")
-def latest_thread() -> dict[str, str | None]:
-    return {"thread_id": get_latest_thread_id()}
+async def latest_thread() -> dict[str, str | None]:
+    return {"thread_id": await get_latest_thread_id()}
 
 
 @router.get("/conversations/{conversation_id}/latest-thread", response_model=ConversationSummary)
-def latest_thread_for_conversation(conversation_id: str) -> ConversationSummary:
+async def latest_thread_for_conversation(conversation_id: str) -> ConversationSummary:
     return ConversationSummary(
         conversation_id=conversation_id,
-        thread_id=get_latest_thread_id_for_conversation(conversation_id),
+        thread_id=await get_latest_thread_id_for_conversation(conversation_id),
     )
 
 
@@ -178,7 +166,7 @@ async def live_conversation_snapshot(
         filtered_state = {item: state.get(item) for item in selected}
     else:
         filtered_state = state
-    return StateSnapshotResponse(thread_id=get_latest_thread_id_for_conversation(conversation_id), state=filtered_state)
+    return StateSnapshotResponse(thread_id=await get_latest_thread_id_for_conversation(conversation_id), state=filtered_state)
 
 
 @router.get("/conversations/{conversation_id}/snapshot", response_model=StateSnapshotResponse)
@@ -246,8 +234,8 @@ async def run_status(thread_id: str) -> RunStatusResponse:
 
 
 @router.delete("/threads/{thread_id}", status_code=204)
-def delete_thread(thread_id: str) -> Response:
-    deleted = delete_thread_state(thread_id)
+async def delete_thread(thread_id: str) -> Response:
+    deleted = await delete_thread_state(thread_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Thread not found: {thread_id}")
     return Response(status_code=204)

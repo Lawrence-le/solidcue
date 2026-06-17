@@ -234,7 +234,7 @@ def snap_cmd(
     if live:
         resolved_thread_id = thread_id.strip() if isinstance(thread_id, str) and thread_id.strip() else None
         if resolved_thread_id is None and latest_thread:
-            resolved_thread_id = get_latest_thread_id()
+            resolved_thread_id = asyncio.run(get_latest_thread_id())
         if not resolved_thread_id:
             print(
                 json.dumps(
@@ -246,10 +246,12 @@ def snap_cmd(
                 )
             )
             raise typer.Exit(1)
-        payload = build_live_state_snapshot(
-            thread_id=resolved_thread_id,
-            keys=selected_keys,
-            include_all=all_keys,
+        payload = asyncio.run(
+            build_live_state_snapshot(
+                thread_id=resolved_thread_id,
+                keys=selected_keys,
+                include_all=all_keys,
+            )
         )
     else:
         payload = build_state_snapshot(keys=selected_keys, include_all=all_keys)

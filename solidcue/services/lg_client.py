@@ -67,3 +67,41 @@ async def delete_lg_thread(lg_thread_id: str) -> bool:
         return True
     except Exception:
         return False
+
+
+async def get_lg_thread_interrupt(lg_thread_id: str) -> dict[str, Any] | None:
+    """Return the pending interrupt payload for a thread, or None.
+
+    Reads the thread's current state snapshot from the LangGraph Server and walks
+    its pending tasks for an interrupt value. The server owns this state, so a
+    reopened/resumable thread surfaces its interrupt here without any local store.
+    """
+    try:
+        client = get_lg_client()
+        snapshot = await client.threads.get_state(lg_thread_id)
+    except Exception:
+        return None
+    if not snapshot:
+        return None
+    tasks = snapshot.get("tasks") if isinstance(snapshot, dict) else getattr(snapshot, "tasks", None)
+    for task in tasks or []:
+        interrupts = task.get("interrupts") if isinstance(task, dict) else getattr(task, "interrupts", None)
+        for interrupt in interrupts or []:
+            value = interrupt.get("value") if isinstance(interrupt, dict) else getattr(interrupt, "value", None)
+            if isinstance(value, dict):
+                return value
+    return None
+
+
+async def get_lg_latest_thread_id() -> str | None:
+    """Return the most recently created thread id on the server, or None."""
+    try:
+        client = get_lg_client()
+        results = await client.threads.search(limit=1, sort_by="created_at", sort_order="desc")
+    except Exception:
+        return None
+    if not results:
+        return None
+    thread = results[0]
+    thread_id = thread.get("thread_id") if isinstance(thread, dict) else getattr(thread, "thread_id", None)
+    return str(thread_id) if isinstance(thread_id, str) and thread_id.strip() else None

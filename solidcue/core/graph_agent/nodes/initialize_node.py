@@ -29,11 +29,22 @@ def _is_truthy(value: str | None) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
-def initialize_node(state: AgentState) -> dict[str, Any]:
-    """Initialize missing state fields with safe defaults."""
+def initialize_node(state: AgentState, config: Any = None) -> dict[str, Any]:
+    """Initialize missing state fields with safe defaults.
+
+    ``agent_key`` may arrive either in the input state (router path) or only in
+    the run config's ``configurable`` (e.g. a Studio assistant). Seed it from the
+    config when state lacks it, so downstream nodes always see it in state.
+    """
     # Phase 1: optional warmup/preload.
     if _is_truthy(os.getenv("SOLIDCUE_HHEM_PRELOAD")):
         load_hhem_model()
+    # Phase 0: resolve agent_key from state, falling back to the run config.
+    agent_key = state.get("agent_key")
+    if not (isinstance(agent_key, str) and agent_key.strip()):
+        configurable = (config.get("configurable") if isinstance(config, dict) else None) or {}
+        cfg_agent_key = configurable.get("agent_key")
+        agent_key = cfg_agent_key if isinstance(cfg_agent_key, str) and cfg_agent_key.strip() else ""
     # Phase 2: resolve timezone + metadata defaults.
     metadata = dict(state.get("metadata", {}))
     config = state.get("config")
@@ -72,6 +83,7 @@ def initialize_node(state: AgentState) -> dict[str, Any]:
     max_retries = raw_max_retries if isinstance(raw_max_retries, int) and raw_max_retries >= 0 else 3
 
     return {
+        "agent_key": agent_key,
         "metadata": metadata,
         "max_retries": max_retries,
         "phase": state.get("phase") or "source",

@@ -58,10 +58,9 @@ def initialize_router_node(state: RouterState) -> dict[str, Any]:
     updates["metadata"] = _resolve_router_metadata(state)
 
     # Append the user's turn to the persisted chat_history channel (operator.add).
-    # Under LangGraph Server the thread checkpoint accumulates history across turns;
-    # under the FastAPI + SqliteSaver path the same accumulation happens via the
-    # graph checkpoint.  Either way, reading state["chat_history"] in downstream
-    # nodes gives the full conversation history for this thread.
+    # The LangGraph Server thread checkpoint accumulates history across turns, so
+    # reading state["chat_history"] in downstream nodes gives the full conversation
+    # history for this thread.
     user_input = normalize_text(state.get("user_input"))
     if user_input:
         updates["chat_history"] = [{"role": "user", "content": user_input}]

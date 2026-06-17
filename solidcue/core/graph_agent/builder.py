@@ -1,7 +1,4 @@
-import asyncio
 import os
-import sqlite3
-from pathlib import Path
 from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
@@ -28,61 +25,6 @@ def _resolve_recursion_limit() -> int:
     except ValueError:
         return 80
     return value if value > 0 else 80
-
-
-def _resolve_checkpoint_db_path() -> Path:
-    configured_path = os.getenv("SOLIDCUE_CHECKPOINT_DB_PATH")
-    if configured_path:
-        return Path(configured_path).expanduser()
-    return Path.home() / ".solidcue" / "checkpoints.sqlite"
-
-
-def _build_checkpointer() -> Any:
-    """Sync checkpointer for the non-streaming (blocking) graph paths."""
-    try:
-        from langgraph.checkpoint.sqlite import SqliteSaver
-
-        checkpoint_db_path = _resolve_checkpoint_db_path()
-        checkpoint_db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(checkpoint_db_path), check_same_thread=False)
-        # Set before SqliteSaver creates its tables so a fresh database is born
-        # with incremental auto-vacuum (free pages reclaimable without a rewrite).
-        conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
-        return SqliteSaver(conn)
-    except ModuleNotFoundError:
-        from langgraph.checkpoint.memory import InMemorySaver
-
-        return InMemorySaver()
-
-
-# Module-level async checkpointer singleton — opened once, reused across requests.
-_async_checkpointer: Any = None
-_async_checkpointer_lock: asyncio.Lock | None = None
-
-
-async def _get_async_checkpointer() -> Any:
-    global _async_checkpointer, _async_checkpointer_lock
-    if _async_checkpointer_lock is None:
-        _async_checkpointer_lock = asyncio.Lock()
-    async with _async_checkpointer_lock:
-        if _async_checkpointer is not None:
-            return _async_checkpointer
-        try:
-            import aiosqlite
-            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-            checkpoint_db_path = _resolve_checkpoint_db_path()
-            checkpoint_db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = await aiosqlite.connect(str(checkpoint_db_path))
-            # Set before AsyncSqliteSaver creates its tables so a fresh database
-            # is born with incremental auto-vacuum.
-            await conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
-            _async_checkpointer = AsyncSqliteSaver(conn)
-        except ModuleNotFoundError:
-            from langgraph.checkpoint.memory import InMemorySaver
-
-            _async_checkpointer = InMemorySaver()
-        return _async_checkpointer
 
 
 def _route_after_decision(state: AgentState) -> Literal["execution", "router"]:
@@ -174,23 +116,14 @@ def _compile_graph(
     return compiled.with_config(cfg)
 
 
-async def build_async_agent_graph(*, streaming_final_output: bool = False) -> Any:
-    """Build the agent graph with the async-compatible checkpointer."""
-    checkpointer = await _get_async_checkpointer()
-    return _compile_graph(checkpointer, streaming_final_output=streaming_final_output)
-
-
-def build_agent_graph(*, streaming_final_output: bool = False) -> Any:
-    """Build the agent graph with the sync checkpointer (non-streaming paths)."""
-    return _compile_graph(_build_checkpointer(), streaming_final_output=streaming_final_output)
-
-
 async def build_for_server(config: Any) -> Any:
     """LangGraph Server graph factory. Called per-run with the merged run config.
 
-    The server injects its own checkpointer; we compile without one.
-    agent_key is validated against the registry here; it also flows through
-    AgentState at run time so nodes can load their per-agent configuration.
+    The server injects its own checkpointer; we compile without one. The graph is
+    always buildable so it can be previewed/drawn in Studio without a config —
+    ``agent_key`` is only validated here when supplied (a wrong key fails fast).
+    The required-ness of ``agent_key`` is enforced at run time: ``initialize_node``
+    seeds it into ``AgentState`` from the config, and downstream nodes guard it.
 
     config["configurable"]["agent_key"] is populated from the assistant's saved
     config, merged with any per-run overrides.
@@ -198,16 +131,12 @@ async def build_for_server(config: Any) -> Any:
     from langchain_core.runnables import RunnableConfig  # local to avoid circular at module load
 
     cfg: RunnableConfig = config  # type: ignore[assignment]
-    configurable = cfg.get("configurable") or {}
+    configurable = (cfg.get("configurable") if isinstance(cfg, dict) else None) or {}
     agent_key = configurable.get("agent_key")
-    if not agent_key:
-        raise ValueError(
-            "config['configurable']['agent_key'] is required. "
-            "Create an assistant with config={'configurable': {'agent_key': '<key>'}}."
-        )
-    from solidcue.agent_configs.loader import load_agent
+    if agent_key:
+        from solidcue.agent_configs.loader import load_agent
 
-    load_agent(agent_key)  # raises FileNotFoundError / ValueError if not registered
+        load_agent(agent_key)  # raises FileNotFoundError / ValueError if not registered
 
     thread_id: str | None = configurable.get("thread_id") or None
     return _compile_graph(checkpointer=None, session_id=thread_id)

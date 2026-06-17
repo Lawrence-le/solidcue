@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import os
-import sqlite3
-from pathlib import Path
 from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
@@ -27,53 +24,6 @@ def _resolve_recursion_limit() -> int:
     except ValueError:
         return 40
     return value if value > 0 else 40
-
-
-def _resolve_checkpoint_db_path() -> Path:
-    configured_path = os.getenv("SOLIDCUE_CHECKPOINT_DB_PATH")
-    if configured_path:
-        return Path(configured_path).expanduser()
-    return Path.home() / ".solidcue" / "checkpoints.sqlite"
-
-
-def _build_checkpointer() -> Any:
-    try:
-        from langgraph.checkpoint.sqlite import SqliteSaver
-
-        checkpoint_db_path = _resolve_checkpoint_db_path()
-        checkpoint_db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(checkpoint_db_path), check_same_thread=False)
-        return SqliteSaver(conn)
-    except ModuleNotFoundError:
-        from langgraph.checkpoint.memory import InMemorySaver
-
-        return InMemorySaver()
-
-
-_async_checkpointer: Any = None
-_async_checkpointer_lock: asyncio.Lock | None = None
-
-
-async def _get_async_checkpointer() -> Any:
-    global _async_checkpointer, _async_checkpointer_lock
-    if _async_checkpointer_lock is None:
-        _async_checkpointer_lock = asyncio.Lock()
-    async with _async_checkpointer_lock:
-        if _async_checkpointer is not None:
-            return _async_checkpointer
-        try:
-            import aiosqlite
-            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-            checkpoint_db_path = _resolve_checkpoint_db_path()
-            checkpoint_db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = await aiosqlite.connect(str(checkpoint_db_path))
-            _async_checkpointer = AsyncSqliteSaver(conn)
-        except ModuleNotFoundError:
-            from langgraph.checkpoint.memory import InMemorySaver
-
-            _async_checkpointer = InMemorySaver()
-        return _async_checkpointer
 
 
 def _route_after_intent_router(
@@ -133,15 +83,6 @@ def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
     if callbacks:
         cfg["callbacks"] = callbacks
     return compiled.with_config(cfg)
-
-
-async def build_async_router_graph() -> Any:
-    checkpointer = await _get_async_checkpointer()
-    return _compile_graph(checkpointer)
-
-
-def build_router_graph() -> Any:
-    return _compile_graph(_build_checkpointer())
 
 
 async def build_for_server(config: Any) -> Any:
