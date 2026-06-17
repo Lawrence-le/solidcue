@@ -17,7 +17,7 @@ function systemPrefersDark() {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  // Dark-first: default to dark when nothing stored (STUDIO.md §3.4, decision H).
+  // Dark-first: default to dark when nothing stored (docs/STUDIO.md §3.4, decision H).
   const [theme, setThemeState] = useState<Theme>(
     () => (localStorage.getItem(STORAGE_KEY) as Theme) || "dark",
   )

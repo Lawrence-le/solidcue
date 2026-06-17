@@ -1,5 +1,4 @@
 import json
-import hashlib
 import logging
 import re
 from typing import Any
@@ -46,9 +45,6 @@ Create deterministic fallback tasks when model planning fails.
 _guardrail_renumber_task_ids:
 Normalize task IDs into sequential `task_N`.
 
-_item_key_from_url:
-Generate stable per-item key from URL hash.
-
 _guardrail_assign_item_keys:
 Ensure every task has `context.item_key` for item-scoped downstream execution.
 
@@ -64,13 +60,14 @@ Coerce planner output into canonical runtime task shape.
 _apply_planning_guardrails:
 Pipeline wrapper: normalize shape -> renumber IDs -> assign item keys.
 
-_build_task_plan_from_input:
-Select planning source path (empty-input default vs LLM/fallback).
+_build_raw_task_plan:
+Select planning source path (empty-input default vs LLM/fallback) and flag
+whether the result is cacheable (LLM-derived only).
 
 planning_node:
 Main entrypoint. Phases:
-1) Build raw task plan
-2) Apply guardrails
+1) Reuse cached guardrailed template if present
+2) Otherwise build raw plan, apply guardrails, and cache the guardrailed result
 3) Return normalized plan + metrics
 """
 
@@ -108,7 +105,6 @@ async def _llm_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, 
     Returns a list of tasks with type, description, requires, and status.
     """
     user_input = state.get("user_input", "")
-    conversation_id = state.get("conversation_id") or state.get("thread_id")
 
     try:
         agent_key = state.get("agent_key")
@@ -195,11 +191,6 @@ def _guardrail_renumber_task_ids(tasks: list[dict[str, Any]]) -> list[dict[str, 
     return normalized
 
 
-def _item_key_from_url(url: str) -> str:
-    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
-    return f"u_{digest}"
-
-
 def _ordinal_index_from_text(text: str) -> int | None:
     lowered = str(text or "").casefold()
     mapping = {
@@ -255,10 +246,20 @@ def _guardrail_assign_item_keys(
 
     6) Inherit the most recent URL-derived/explicit key for adjacent non-URL tasks.
     7) Fallback to deterministic sequence key.
+
+    After the key is resolved, all user-input source values (URL-like fields and
+    any value matching a known source_ref) are stripped from context so the plan
+    stays request-agnostic and reusable. Downstream nodes bind the concrete
+    source value from target_artifacts_source via item_key.
     """
     url_fields = ("source_ref", "posting_url", "url", "jd_url", "job_url")
     url_to_item: dict[str, str] = {}
     metadata_index_map, metadata_url_map = _metadata_item_map(target_artifacts_source)
+    known_source_refs = {
+        str(item.get("source_ref") or "").strip()
+        for item in (target_artifacts_source or [])
+        if isinstance(item, dict) and str(item.get("source_ref") or "").strip()
+    }
     discovered_keys: list[str] = []
     current_item_key: str | None = None
     fallback_counter = 0
@@ -294,7 +295,9 @@ def _guardrail_assign_item_keys(
                 mapped_key = (
                     metadata_url_map.get(matched_url)
                     or url_to_item.get(matched_url)
-                    or _item_key_from_url(matched_url)
+                    # Positional fallback (a slot, not a source identity) so the
+                    # plan stays reusable across requests with different sources.
+                    or f"item_{len(url_to_item) + 1}"
                 )
                 item_key = mapped_key
                 url_to_item[matched_url] = mapped_key
@@ -328,6 +331,20 @@ def _guardrail_assign_item_keys(
         # Keep source_item_index as an internal planning hint only.
         # Runtime task context should bind by item_key only.
         task_context.pop("source_item_index", None)
+
+        # Strip user-input source values so the plan stays request-agnostic.
+        # The source binding is carried solely by item_key; the concrete value
+        # (URL/path) is resolved downstream from target_artifacts_source. Leaving
+        # it here would pollute a reused plan when a future request has a
+        # different source.
+        for field in url_fields:
+            task_context.pop(field, None)
+        for key in list(task_context.keys()):
+            if key == "item_key":
+                continue
+            value = task_context.get(key)
+            if isinstance(value, str) and value.strip() in known_source_refs:
+                task_context.pop(key, None)
 
         normalized.append({**task, "context": task_context})
 
@@ -452,11 +469,12 @@ def _apply_planning_guardrails(
     return with_item_keys
 
 
-async def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Build raw task plan (pre-guardrails) and planning metrics.
+async def _build_raw_task_plan(state: AgentState) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    """Build the raw (pre-guardrail) task plan, metrics, and a cacheable flag.
 
-    Checks task_plan.json cache first. On cache miss, calls LLM and saves
-    the result so subsequent runs skip the LLM call entirely.
+    The cacheable flag is True only for LLM-derived plans. The empty-input
+    default and the deterministic fallback are not cached, since they are cheap
+    to recompute and not representative of the agent's real workflow.
     """
     user_input = state.get("user_input", "")
     if not user_input.strip():
@@ -471,30 +489,37 @@ async def _build_task_plan_from_input(state: AgentState) -> tuple[list[dict[str,
                 }
             ],
             {},
+            False,
         )
-
-    agent_key = state.get("agent_key") or ""
-    cached = _load_task_plan_cache(agent_key) if agent_key else None
-    if cached is not None:
-        return cached, {}
 
     task_plan, metric_planning = await _llm_plan(state)
     if not task_plan:
-        task_plan = _fallback_task_plan(state)
-    elif agent_key:
-        _save_task_plan_cache(agent_key, task_plan)
-    return task_plan, metric_planning
+        return _fallback_task_plan(state), metric_planning, False
+    return task_plan, metric_planning, True
 
 
 async def planning_node(state: AgentState) -> dict[str, Any]:
     """Generate a structured task plan for downstream execution."""
-    # Phase 1: build raw task plan from input/model.
-    raw_task_plan, metric_planning = await _build_task_plan_from_input(state)
-    # Phase 2: normalize plan into canonical runtime shape.
-    task_plan = _apply_planning_guardrails(
-        raw_task_plan,
-        target_artifacts_source=state.get("target_artifacts_source") or [],
-    )
+    agent_key = state.get("agent_key") or ""
+
+    # Phase 1: reuse the cached, already-guardrailed template if present. The
+    # cache stores the source-agnostic plan (URLs stripped, positional item_keys),
+    # so it is reusable across requests with different sources and needs no
+    # re-normalization here.
+    cached = _load_task_plan_cache(agent_key) if agent_key else None
+    if cached is not None:
+        task_plan = cached
+        metric_planning: dict[str, Any] = {}
+    else:
+        # Phase 2: build raw plan, normalize it, and cache the guardrailed result
+        # (never the raw LLM output, which still carries request-specific values).
+        raw_task_plan, metric_planning, cacheable = await _build_raw_task_plan(state)
+        task_plan = _apply_planning_guardrails(
+            raw_task_plan,
+            target_artifacts_source=state.get("target_artifacts_source") or [],
+        )
+        if agent_key and cacheable:
+            _save_task_plan_cache(agent_key, task_plan)
 
     # Phase 3: finalize planning state for downstream nodes.
     first_task_id = task_plan[0]["id"] if task_plan else "task_1"

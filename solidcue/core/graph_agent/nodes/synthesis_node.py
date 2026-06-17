@@ -1,7 +1,7 @@
 import json
 import logging
 import hashlib
-from typing import Any, cast
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

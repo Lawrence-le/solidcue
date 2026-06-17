@@ -5,7 +5,7 @@ from typing import Any
 from solidcue.core.graph_system.state.schema import SystemState
 from solidcue.services.workspace_service import (
     get_agents,
-    list_agent_keys,
+    list_agent_keys,  # noqa: F401  -- re-exported for test monkeypatching
     list_system_skill_keys,
 )
 

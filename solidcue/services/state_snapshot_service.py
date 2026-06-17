@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from solidcue.core.graph_agent.builder import build_agent_graph, build_async_agent_graph
+from solidcue.core.graph_agent.builder import build_async_agent_graph
 from solidcue.core.graph_agent.state.schema import AgentState
 from solidcue.services.lg_client import (
     delete_lg_thread,

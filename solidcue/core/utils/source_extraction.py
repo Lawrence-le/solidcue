@@ -1,13 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from typing import Any
-
-
-def _item_key_from_url(url: str) -> str:
-    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
-    return f"u_{digest}"
 
 
 def _extract_urls_from_input(user_input: str) -> list[str]:
@@ -50,12 +44,15 @@ def build_target_artifacts_source(
     for url in _extract_urls_from_input(user_input):
         if url not in urls:
             urls.append(url)
+    # item_key is positional (a slot, not a source identity) so that the same
+    # task plan can be reused across requests with different sources: "item_1"
+    # always binds to the first source of the current request.
     return [
         {
             "index": idx,
             "source_type": "url",
             "source_ref": url,
-            "item_key": _item_key_from_url(url),
+            "item_key": f"item_{idx}",
         }
         for idx, url in enumerate(urls, start=1)
     ]

@@ -35,6 +35,9 @@ CLAUDE.md
 # SolidCue local checkpoint sqlite (if generated in project dir)
 .solidcue/
 
+# LangGraph dev server runtime artifacts (checkpoints, ops, store)
+.langgraph_api/
+
 # Local model weights
 solidcue/models/
 

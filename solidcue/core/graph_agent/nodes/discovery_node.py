@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from solidcue.agent_configs.loader import load_agent, load_agent_skill, load_agent_tools, get_discovery_path

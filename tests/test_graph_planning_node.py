@@ -4,6 +4,7 @@ import pytest
 import importlib as _il
 
 from solidcue.core.graph_agent.nodes.planning_node import (
+    _apply_planning_guardrails,
     _guardrail_normalize_task_shape,
     planning_node,
 )
@@ -183,6 +184,58 @@ def test_planning_no_longer_sets_legacy_role_for_jd_tailoring() -> None:
 
     role_key = "evidence" + "_role"
     assert role_key not in tasks[0]
+
+
+def test_guardrails_strip_user_input_source_values_from_context() -> None:
+    """Source URLs/paths must not be written into the task plan.
+
+    The plan persists and is reused, so any baked-in source would pollute a
+    future request with a different source. The source binding is carried only
+    by item_key; the concrete value is resolved downstream.
+    """
+    raw = [
+        {
+            "id": "x",
+            "type": "source_gathering",
+            "description": "Navigate to the job posting URL",
+            "requires": ["job_page_opened"],
+            "context": {
+                "tool": "browser_navigate",
+                "url": "https://www.linkedin.com/jobs/view/4421570943/",
+            },
+            "status": "pending",
+        },
+        {
+            "id": "y",
+            "type": "source_gathering",
+            "description": "Extract the JD text",
+            "requires": ["jd_extracted"],
+            "context": {
+                "tool": "extract_text",
+                "posting_url": "https://www.linkedin.com/jobs/view/4421570943/",
+            },
+            "status": "pending",
+        },
+    ]
+    target_artifacts_source = [
+        {
+            "index": 1,
+            "item_key": "jd_one",
+            "source_ref": "https://www.linkedin.com/jobs/view/4421570943/",
+            "source_type": "url",
+        }
+    ]
+
+    out = _apply_planning_guardrails(raw, target_artifacts_source=target_artifacts_source)
+
+    for task in out:
+        context = task["context"]
+        for field in ("url", "posting_url", "source_ref", "jd_url", "job_url"):
+            assert field not in context
+        # The non-source binding/argument fields are preserved.
+        assert context["item_key"] == "jd_one"
+    assert out[0]["context"]["tool"] == "browser_navigate"
+    assert out[1]["context"]["tool"] == "extract_text"
 
 
 @pytest.mark.asyncio

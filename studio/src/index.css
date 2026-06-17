@@ -3,7 +3,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Violet on Zinc — dark-first (see STUDIO.md §3.4) */
+/* Violet on Zinc — dark-first (see docs/STUDIO.md §3.4) */
 :root {
   --radius: 0.5rem;
 
