@@ -33,9 +33,9 @@ PHASE_WITH_TOOLS_GUIDANCE = {"artifact", "source"}
 
 TIME_LOCATION_DEFAULTS = {
     "current_time": "Unknown time",
+    "current_date": "Unknown date",
     "location": "Unknown location",
     "timezone": "Unknown timezone",
-    "current_time_utc": "Unknown UTC time",
 }
 
 
@@ -193,9 +193,9 @@ def _format_conversation_history(chat_history: list[dict[str, Any]] | None, *, l
 def _build_time_location_context(meta: dict[str, Any]) -> dict[str, str]:
     return {
         "current_time": str(meta.get("current_time", TIME_LOCATION_DEFAULTS["current_time"])),
+        "current_date": str(meta.get("current_date", TIME_LOCATION_DEFAULTS["current_date"])),
         "location": str(meta.get("location", TIME_LOCATION_DEFAULTS["location"])),
         "timezone": str(meta.get("timezone", TIME_LOCATION_DEFAULTS["timezone"])),
-        "current_time_utc": str(meta.get("current_time_utc", TIME_LOCATION_DEFAULTS["current_time_utc"])),
     }
 
 
@@ -439,9 +439,9 @@ def _build_runtime_context_message(
 ) -> str:
     runtime_context = (
         "=== RUNTIME CONTEXT ===\n"
+        f"- Date: {time_location_context['current_date']}\n"
         f"- Time: {time_location_context['current_time']} ({time_location_context['timezone']})\n"
-        f"- Location: {time_location_context['location']}\n"
-        f"- UTC: {time_location_context['current_time_utc']}\n\n"
+        f"- Location: {time_location_context['location']}\n\n"
         "=== RECENT CONVERSATION ===\n"
         f"{_format_conversation_history(chat_history)}\n\n"
         "=== TASK GUIDANCE ===\n"

@@ -334,6 +334,47 @@ def test_router_advances_to_next_task_when_accomplishments_complete() -> None:
     assert result["current_task"] == "task_2"
 
 
+def test_router_source_only_plan_finalizes_after_validated_synthesis() -> None:
+    """A plan whose last task is source_gathering (no synthesis task, e.g. weather
+    assistant) must reach final_output once a validated draft exists, not loop synthesis."""
+    completed_source_plan = [
+        {
+            "id": "task_1",
+            "type": "source_gathering",
+            "description": "Retrieve current weather",
+            "requires": ["weather_data_retrieved"],
+            "status": "completed",
+        }
+    ]
+
+    # First pass after source completes, before synthesis has run: route to synthesis.
+    pre_synthesis = router_node(
+        {
+            "phase": "synthesis",
+            "failure_type": None,
+            "current_task": "task_1",
+            "task_plan": completed_source_plan,
+            "agent_key": "weather_assistant",
+            "synthesis_draft": None,
+        }
+    )
+    assert pre_synthesis["router_next"] == "synthesis"
+
+    # After synthesis produced a validated draft (failure_type cleared): finalize.
+    post_synthesis = router_node(
+        {
+            "phase": "synthesis",
+            "failure_type": None,
+            "current_task": "task_1",
+            "task_plan": completed_source_plan,
+            "agent_key": "weather_assistant",
+            "synthesis_draft": "It is 22°C and sunny.",
+        }
+    )
+    assert post_synthesis["router_next"] == "final_output"
+    assert post_synthesis["phase"] == "final"
+
+
 def test_router_artifact_completion_uses_task_scoped_tool_history() -> None:
     """Router should mark artifact phase final when all accomplishments for current task are met."""
     state = {

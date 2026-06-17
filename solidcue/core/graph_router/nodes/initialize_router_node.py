@@ -33,17 +33,15 @@ def _resolve_router_metadata(state: RouterState) -> dict[str, Any]:
 
     now_local = datetime.now(tz_for_now)
     if "current_time" not in metadata:
-        metadata["current_time"] = now_local.strftime("%A, %B %d, %Y %H:%M:%S")
+        metadata["current_time"] = now_local.strftime("%H:%M:%S")
     if "current_date" not in metadata:
-        metadata["current_date"] = now_local.strftime("%Y-%m-%d")
+        metadata["current_date"] = now_local.strftime("%A, %B %d, %Y")
     if "location" not in metadata:
         location = config_dict.get("location")
         if not isinstance(location, str) or not location.strip():
             profile_location = load_user_profile().location
             location = profile_location if isinstance(profile_location, str) and profile_location.strip() else ""
         metadata["location"] = location if isinstance(location, str) and location.strip() else "Unknown location"
-    if "current_time_utc" not in metadata:
-        metadata["current_time_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     return metadata
 

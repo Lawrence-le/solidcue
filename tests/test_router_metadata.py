@@ -21,7 +21,7 @@ def test_initialize_router_node_sets_metadata_defaults(monkeypatch) -> None:
     assert metadata["location"] == "Singapore"
     assert "current_time" in metadata
     assert "current_date" in metadata
-    assert "current_time_utc" in metadata
+    assert "current_time_utc" not in metadata
 
 
 def test_initialize_router_node_uses_profile_location_fallback(monkeypatch) -> None:

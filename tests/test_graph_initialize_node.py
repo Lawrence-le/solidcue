@@ -58,17 +58,16 @@ def test_initialize_sets_metadata_with_current_time() -> None:
     assert "metadata" in result
     assert "current_time" in result["metadata"]
     assert "current_date" in result["metadata"]
-    assert "current_time_utc" in result["metadata"]
     assert "timezone" in result["metadata"]
     assert "location" in result["metadata"]
-    assert "UTC" in result["metadata"]["current_time_utc"]
+    assert "current_time_utc" not in result["metadata"]
 
 
 def test_initialize_preserves_existing_metadata() -> None:
     result = initialize_node({"metadata": {"user_id": "123"}})
 
     assert result["metadata"]["user_id"] == "123"
-    assert "current_time_utc" in result["metadata"]
+    assert "current_time" in result["metadata"]
 
 
 def test_initialize_uses_config_timezone_and_location() -> None:

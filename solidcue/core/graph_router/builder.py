@@ -76,10 +76,6 @@ async def _get_async_checkpointer() -> Any:
         return _async_checkpointer
 
 
-def _route_after_initialize(_state: RouterState) -> Literal["intent_router"]:
-    return "intent_router"
-
-
 def _route_after_intent_router(
     state: RouterState,
 ) -> Literal["create_agent_system", "execute_plan", "handoff", "final_output"]:
@@ -100,18 +96,6 @@ def _route_after_intent_router(
     return "final_output"
 
 
-def _route_after_handoff(_state: RouterState) -> Literal["final_output"]:
-    return "final_output"
-
-
-def _route_after_execute_plan(_state: RouterState) -> Literal["final_output"]:
-    return "final_output"
-
-
-def _route_after_create_agent_system(_state: RouterState) -> Literal["final_output"]:
-    return "final_output"
-
-
 def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
     from solidcue.core.graph_system.builder import build_system_subgraph
 
@@ -128,11 +112,11 @@ def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
 
     graph.set_entry_point("initialize")
 
-    graph.add_conditional_edges("initialize", _route_after_initialize)
+    graph.add_edge("initialize", "intent_router")
     graph.add_conditional_edges("intent_router", _route_after_intent_router)
-    graph.add_conditional_edges("execute_plan", _route_after_execute_plan)
-    graph.add_conditional_edges("handoff", _route_after_handoff)
-    graph.add_conditional_edges("create_agent_system", _route_after_create_agent_system)
+    graph.add_edge("execute_plan", "final_output")
+    graph.add_edge("handoff", "final_output")
+    graph.add_edge("create_agent_system", "final_output")
     graph.add_edge("final_output", END)
 
     compiled = graph.compile(checkpointer=checkpointer)

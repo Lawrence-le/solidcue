@@ -405,6 +405,11 @@ def _guardrail_advance_task_plan(state: AgentState) -> dict[str, Any]:
     if next_idx >= len(task_plan):
         if current_task_type in {"artifact_generation", "synthesis", "review"}:
             return {"phase": "final", "task_plan": updated_task_plan, "retry_reason": None, "router_next": "final_output"}
+        # Last task is source_gathering (no synthesis task in plan): run synthesis once,
+        # then finalize. Without this, a validated draft re-enters synthesis forever.
+        draft = state.get("synthesis_draft")
+        if isinstance(draft, str) and draft.strip() and state.get("failure_type") is None:
+            return {"phase": "final", "task_plan": updated_task_plan, "retry_reason": None, "router_next": "final_output"}
         if _guardrail_is_artifact_intent(state.get("user_input")):
             return {"phase": "artifact", "task_plan": updated_task_plan, "retry_reason": None, "router_next": "decision"}
         return {"phase": "synthesis", "task_plan": updated_task_plan, "retry_reason": None, "router_next": "synthesis"}
