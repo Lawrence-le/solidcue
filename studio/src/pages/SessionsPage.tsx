@@ -15,11 +15,8 @@ import {
 } from "lucide-react";
 import { api, ApiError } from "@/lib/api"
 import {
-  clearPersistedRun,
-  joinLangGraph,
   lgCancelRun,
   lgCreateThread,
-  loadPersistedRun,
   loadThreadMapping,
   persistThreadMapping,
   streamLangGraph,
@@ -73,7 +70,6 @@ type RunState =
   | "interrupted"
   | "completed"
   | "error"
-  | "disconnected"
   | "cancelled";
 
 type ChatMessageInput =
@@ -127,7 +123,6 @@ function mapRemoteRunStatus(status: string | undefined): RunState {
   if (status === "interrupted") return "interrupted";
   if (status === "completed") return "completed";
   if (status === "error") return "error";
-  if (status === "disconnected") return "disconnected";
   if (status === "cancelled") return "cancelled";
   return "idle";
 }
@@ -239,68 +234,6 @@ function ApprovalCard({
 // ---------------------------------------------------------------------------
 // Node progress rail
 // ---------------------------------------------------------------------------
-
-function NodeRail({
-  events,
-  emptyStateLabel,
-}: {
-  events: NodeEvent[];
-  emptyStateLabel: string | null;
-}) {
-  if (events.length === 0) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center px-4 text-center">
-        {emptyStateLabel ? (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-            <span>{emptyStateLabel} node events will appear shortly.</span>
-          </div>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            Node events appear here during a run.
-          </p>
-        )}
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-1 p-3">
-      {events.map((ev, i) => {
-        return (
-          <div key={i} className="flex items-start gap-2 py-1">
-            {ev.status === "running" ? (
-              <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
-            ) : (
-              <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-500" />
-            )}
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <span className="font-mono text-xs font-medium">{ev.node}</span>
-              </div>
-              {ev.phase && (
-                <div className="text-xs text-muted-foreground">{ev.phase}</div>
-              )}
-              <div className="flex items-center gap-2">
-                <div className="text-xs text-muted-foreground/50 tabular-nums">
-                  {new Date(ev.ts).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                  })}
-                </div>
-                {ev.tokens && (
-                  <div className="text-xs text-muted-foreground/60 tabular-nums">
-                    {ev.tokens.input}↑ {ev.tokens.output}↓
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 function StepHistory({ events }: { events: NodeEvent[] }) {
   if (events.length === 0) return null;
@@ -497,13 +430,6 @@ function routerSettingsFromProfile(profile: UserProfileConfig | null | undefined
   };
 }
 
-function getInitialNodeRailWidth(): number {
-  if (typeof window === "undefined") return 192;
-  if (window.innerWidth >= 1536) return 320;
-  if (window.innerWidth >= 1280) return 280;
-  return 192;
-}
-
 // ---------------------------------------------------------------------------
 // SessionsPage
 // ---------------------------------------------------------------------------
@@ -521,10 +447,7 @@ export function SessionsPage() {
   const [nodeEvents, setNodeEvents] = useState<NodeEvent[]>([]);
   const [subagentSteps, setSubagentSteps] = useState<SubagentStep[]>([]);
   const [planIntro, setPlanIntro] = useState<string>("");
-  const [nodeRailWidth, setNodeRailWidth] = useState(getInitialNodeRailWidth);
-  const nodeRailResizerRef = useRef<HTMLDivElement>(null);
   const [runState, setRunState] = useState<RunState>("idle");
-  const [resumable, setResumable] = useState(false);
   const [userInput, setUserInput] = useState("");
   const [loadingSession, setLoadingSession] = useState(false);
   const [workedSeconds, setWorkedSeconds] = useState<number | null>(null);
@@ -538,55 +461,13 @@ export function SessionsPage() {
   const abortRef = useRef<AbortController | null>(null);
   const stopIntentionalRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const nodeRailEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const pendingConversationIdRef = useRef<string | null>(null);
   const runStartedAtRef = useRef<number | null>(null);
-  const nodeRailWidthRef = useRef(nodeRailWidth);
-  const preserveNodeTimelineOnStartRef = useRef(false);
-  const reconnectStatusMessageIdRef = useRef<string | null>(null);
-  const isRejoiningRunRef = useRef(false);
   // LangGraph Server thread ID for the current conversation (different from the
   // conversation UUID used as the URL param — see lgClient.ts for the mapping).
   const lgThreadIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    nodeRailWidthRef.current = nodeRailWidth;
-  }, [nodeRailWidth]);
-
-  // On page load, check whether there's an in-progress LangGraph run for the
-  // current conversation (identified by last_event_id in sessionStorage).  If
-  // found, rejoin immediately so gap events from the disconnect window are
-  // replayed — this is the fix for the original "refresh loses events" bug.
-  useEffect(() => {
-    if (!conversationId || runState !== "idle") return;
-    const lgThreadId = loadThreadMapping(conversationId);
-    if (!lgThreadId) return;
-    const persisted = loadPersistedRun(lgThreadId);
-    if (!persisted) return;
-
-    isRejoiningRunRef.current = true;
-    lgThreadIdRef.current = lgThreadId;
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setRunState("streaming");
-
-    joinLangGraph(lgThreadId, persisted.runId, persisted.lastEventId, handleEvent, ctrl.signal)
-      .catch((err: unknown) => {
-        if ((err as Error).name !== "AbortError") {
-          clearPersistedRun(lgThreadId);
-          setRunState("error");
-          addMessage({ role: "error", content: String(err) });
-        }
-      })
-      .finally(() => {
-        abortRef.current = null;
-      });
-    // handleEvent and addMessage are stable — intentionally not listed to avoid
-    // double-firing when runState transitions from streaming back to completed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId]);
 
   // Abort any active SSE stream cleanly before the page unloads so the browser
   // loading indicator doesn't hang and the server can detect the disconnect.
@@ -596,47 +477,6 @@ export function SessionsPage() {
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, []);
-
-  // Node rail resizer — track mouse drag to adjust rail width
-  useEffect(() => {
-    const resizer = nodeRailResizerRef.current;
-    if (!resizer) return;
-
-    let startX = 0;
-    let startWidth = 0;
-
-    const onMouseDown = (e: MouseEvent) => {
-      e.preventDefault();
-      startX = e.clientX;
-      startWidth = nodeRailWidthRef.current;
-      document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-      const delta = e.clientX - startX;
-      // The rail is on the right side of a fixed-width row, so widening it
-      // moves the splitter left. Invert the delta so the splitter follows the cursor.
-      const next = Math.min(Math.max(startWidth - delta, 220), 720);
-      setNodeRailWidth(next);
-    };
-
-    const onMouseUp = () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-
-    resizer.addEventListener("mousedown", onMouseDown);
-    return () => {
-      resizer.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
   }, []);
 
   useEffect(() => {
@@ -737,36 +577,6 @@ export function SessionsPage() {
         } catch {
           // Best effort — interrupt payload unavailable
         }
-      } else if (effectiveStatus === "running") {
-        setResumable(true);
-        if (!options?.silentRunning) {
-          msgs.push({
-            role: "system",
-            content:
-              "Run is still active. Click Rejoin to continue from the latest checkpoint if it is resumable.",
-            id: msgId(),
-          });
-        }
-      } else if (effectiveStatus === "disconnected") {
-        msgs.push({
-          role: "system",
-          content:
-            "Previous run was interrupted when the browser disconnected. Click Rejoin to continue from the latest checkpoint if it is resumable.",
-            id: msgId(),
-        });
-        try {
-          const r = await api.conversationResumable(targetConversationId);
-          setResumable(r.resumable);
-        } catch {
-          /* best effort */
-        }
-      } else if (effectiveStatus === "cancelled") {
-        try {
-          const r = await api.conversationResumable(targetConversationId);
-          setResumable(r.resumable);
-        } catch {
-          /* best effort */
-        }
       } else if (effectiveStatus === "error" && runRes.error) {
         msgs.push({ role: "error", content: runRes.error, id: msgId() });
       }
@@ -783,11 +593,7 @@ export function SessionsPage() {
       if (runRes.run_id) setRunId(runRes.run_id);
       runStartedAtRef.current = null;
       setMessages(msgs);
-      setRunState(
-        effectiveStatus === "running" || effectiveStatus === "disconnected"
-          ? "disconnected"
-          : mapRemoteRunStatus(effectiveStatus),
-      );
+      setRunState(mapRemoteRunStatus(effectiveStatus));
       return {
         status: effectiveStatus,
         agentKey: loadedAgentKey,
@@ -811,7 +617,7 @@ export function SessionsPage() {
     );
     runStartedAtRef.current = null;
     setLiveWorkedSeconds(0);
-    setWorkedSeconds((prev) => (prev ?? 0) + elapsedSeconds);
+    setWorkedSeconds(elapsedSeconds);
     return elapsedSeconds;
   }, []);
 
@@ -838,14 +644,12 @@ export function SessionsPage() {
         setMessages([]);
         setNodeEvents([]);
         setRunState("idle");
-        setResumable(false);
         setUserInput("");
         setLoadingSession(false);
         setWorkedSeconds(null);
         setLiveWorkedSeconds(0);
         setTimerVersion(0);
         runStartedAtRef.current = null;
-        isRejoiningRunRef.current = false;
       }
       return;
     }
@@ -867,36 +671,24 @@ export function SessionsPage() {
     setMessages([]);
     setNodeEvents([]);
     setRunState("idle");
-    setResumable(false);
     setUserInput("");
     setLoadingSession(true);
     setWorkedSeconds(null);
     setLiveWorkedSeconds(0);
     setTimerVersion(0);
     runStartedAtRef.current = null;
-    isRejoiningRunRef.current = false;
 
-    // If there's an in-progress LangGraph run for this conversation, skip the
-    // snapshot load — the rejoin useEffect will stream the missing events and
-    // the snapshot's .catch() would otherwise wipe out those messages.
-    const lgThreadIdForConv = loadThreadMapping(conversationParam);
-    const hasPersistedRun = lgThreadIdForConv ? !!loadPersistedRun(lgThreadIdForConv) : false;
-
-    if (hasPersistedRun) {
-      setLoadingSession(false);
-    } else {
-      loadConversationSnapshot(conversationParam, { silentRunning: true })
-        .catch(() => {
-          setMessages([
-            {
-              role: "system",
-              content: `Conversation ${conversationParam.slice(0, 8)} loaded.`,
-              id: msgId(),
-            },
-          ]);
-        })
-        .finally(() => setLoadingSession(false));
-    }
+    loadConversationSnapshot(conversationParam, { silentRunning: true })
+      .catch(() => {
+        setMessages([
+          {
+            role: "system",
+            content: `Conversation ${conversationParam.slice(0, 8)} loaded.`,
+            id: msgId(),
+          },
+        ]);
+      })
+      .finally(() => setLoadingSession(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     conversationParam,
@@ -943,10 +735,6 @@ export function SessionsPage() {
     return () => window.clearInterval(interval);
   }, [runState, timerVersion]);
 
-  useEffect(() => {
-    nodeRailEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [nodeEvents]);
-
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
@@ -960,13 +748,6 @@ export function SessionsPage() {
 
   function addMessage(msg: ChatMessageInput) {
     setMessages((prev) => [...prev, { ...msg, id: msgId() } as ChatMessage]);
-  }
-
-  function removeReconnectStatusMessage() {
-    const messageId = reconnectStatusMessageIdRef.current;
-    if (!messageId) return;
-    setMessages((prev) => prev.filter((msg) => msg.id !== messageId));
-    reconnectStatusMessageIdRef.current = null;
   }
 
   function ensureStreamingAssistantMessage() {
@@ -1017,7 +798,6 @@ export function SessionsPage() {
   const handleEvent = useCallback(
     (e: StreamEvent) => {
       if (e.event === "start") {
-        removeReconnectStatusMessage();
         const tid = e.data.thread_id;
         setThreadId(tid);
         if (e.data.run_id) {
@@ -1027,10 +807,7 @@ export function SessionsPage() {
           setAgentKey(e.data.agent_key);
         }
         pendingConversationIdRef.current = null;
-        if (!preserveNodeTimelineOnStartRef.current) {
-          setNodeEvents([]);
-        }
-        preserveNodeTimelineOnStartRef.current = false;
+        setNodeEvents([]);
         ensureStreamingAssistantMessage();
         beginWorkedTimer();
       } else if (e.event === "message_start") {
@@ -1110,44 +887,35 @@ export function SessionsPage() {
           ),
         );
       } else if (e.event === "interrupt") {
-        removeReconnectStatusMessage();
         markNodeDone(nodeEvents[nodeEvents.length - 1]?.node ?? "");
         setRunState("interrupted");
         finalizeWorkedTimer();
         setThreadId(e.data.thread_id);
         abortRef.current = null;
-        isRejoiningRunRef.current = false;
         addMessage({
           role: "interrupt",
           payload: e.data.interrupt,
           threadId: e.data.thread_id,
         });
       } else if (e.event === "completed") {
-        removeReconnectStatusMessage();
         setNodeEvents((prev) => prev.map((ev) => ({ ...ev, status: "done" })));
         setRunState("completed");
         finalizeWorkedTimer();
         abortRef.current = null;
-        isRejoiningRunRef.current = false;
         finalizeStreamingAssistant(e.data.output);
         qc.invalidateQueries({ queryKey: ["threads"] });
       } else if (e.event === "cancelled") {
-        removeReconnectStatusMessage();
         setNodeEvents((prev) => prev.map((ev) => ({ ...ev, status: "done" })));
         setRunState("cancelled");
         finalizeWorkedTimer();
-        setResumable(true);
         streamingAssistantIdRef.current = null;
         abortRef.current = null;
-        isRejoiningRunRef.current = false;
         setNodeEvents([]);
       } else if (e.event === "error") {
-        removeReconnectStatusMessage();
         setRunState("error");
         finalizeWorkedTimer();
         streamingAssistantIdRef.current = null;
         abortRef.current = null;
-        isRejoiningRunRef.current = false;
         addMessage({ role: "error", content: e.data.message });
         setNodeEvents([]);
       }
@@ -1161,67 +929,17 @@ export function SessionsPage() {
     ],
   );
 
-  const handleContinue = useCallback(async () => {
-    if (!conversationId) return;
-    const lgThreadId = lgThreadIdRef.current ?? loadThreadMapping(conversationId);
-    if (!lgThreadId) {
-      setRunState("idle");
-      return;
-    }
-    const persisted = loadPersistedRun(lgThreadId);
-    if (!persisted) {
-      setRunState("idle");
-      await loadConversationSnapshot(conversationId);
-      return;
-    }
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    isRejoiningRunRef.current = true;
-    setRunState("streaming");
-    setResumable(false);
-    preserveNodeTimelineOnStartRef.current = true;
-    try {
-      await joinLangGraph(lgThreadId, persisted.runId, persisted.lastEventId, handleEvent, ctrl.signal);
-    } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        streamingAssistantIdRef.current = null;
-        abortRef.current = null;
-        addMessage({
-          role: "error",
-          content: (err as ApiError).message ?? String(err),
-        });
-        finalizeWorkedTimer();
-        setRunState("error");
-      } else {
-        streamingAssistantIdRef.current = null;
-        abortRef.current = null;
-        finalizeWorkedTimer();
-        if (stopIntentionalRef.current) {
-          stopIntentionalRef.current = false;
-        } else {
-          setRunState("idle");
-        }
-      }
-    }
-  }, [conversationId, finalizeWorkedTimer, handleEvent, loadConversationSnapshot]);
-
   async function startRun(
     input: string,
     conversationIdOverride?: string,
-    preserveNodeTimeline = false,
   ) {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    isRejoiningRunRef.current = false;
     setRunState("streaming");
-    preserveNodeTimelineOnStartRef.current = preserveNodeTimeline;
-    if (!preserveNodeTimeline) {
-      setNodeEvents([]);
-      setSubagentSteps([]);
-      setPlanIntro("");
-    }
+    setNodeEvents([]);
+    setSubagentSteps([]);
+    setPlanIntro("");
 
     const effectiveConversationId = conversationIdOverride || conversationId || undefined;
 
@@ -1277,12 +995,12 @@ export function SessionsPage() {
       navigate(`/sessions?${nextParams.toString()}`, { replace: true });
       setUserInput("");
       addMessage({ role: "user", content: text });
-      startRun(text, nextConversationId, false);
+      startRun(text, nextConversationId);
       return;
     }
     setUserInput("");
     addMessage({ role: "user", content: text });
-    startRun(text, undefined, false);
+    startRun(text);
   }
 
   async function handleStop() {
@@ -1300,29 +1018,16 @@ export function SessionsPage() {
       } catch {
         /* best effort */
       }
-      clearPersistedRun(lgThreadId);
     }
-    if (conversationId) {
-      try {
-        await loadConversationSnapshot(conversationId);
-      } catch {
-        /* best effort */
-      }
-    }
-    setResumable(true);
   }
 
   const streaming = runState === "streaming";
-  const taskRunning = streaming || runState === "disconnected";
+  const taskRunning = streaming;
   const streamingEmptyStateLabel =
-    streaming && nodeEvents.length === 0
-      ? isRejoiningRunRef.current
-        ? "Resuming..."
-        : "Starting..."
-      : null;
+    streaming && nodeEvents.length === 0 ? "Starting..." : null;
   const displayedWorkedSeconds =
       streaming
-        ? (workedSeconds ?? 0) + liveWorkedSeconds
+        ? liveWorkedSeconds
         : workedSeconds;
   const showWorkedTimer = agentKey !== "router" && !!displayedWorkedSeconds;
   const providerMeta = PROVIDER_META[routerRole.provider_type];
@@ -1332,7 +1037,6 @@ export function SessionsPage() {
     isRouterProviderComplete(routerRole) &&
     !streaming &&
     runState !== "interrupted" &&
-    runState !== "disconnected" &&
     runState !== "cancelled";
 
   return (
@@ -1469,25 +1173,6 @@ export function SessionsPage() {
             )}
           </div>
 
-          {/* Cancelled banner */}
-          {(runState === "cancelled" ||
-            (runState === "disconnected" && resumable)) && (
-            <div className="shrink-0 flex items-center justify-between gap-3 px-4 sm:px-8 lg:px-16 py-2 border-t bg-muted/30">
-              <p className="text-xs text-muted-foreground">
-                {runState === "cancelled"
-                  ? "Run stopped. You can resume from where it left off."
-                  : "Run is disconnected. You can rejoin from the latest checkpoint."}
-              </p>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleContinue}
-              >
-                {runState === "cancelled" ? "Resume" : "Rejoin"}
-              </Button>
-            </div>
-          )}
-
           {/* Input */}
           <div className="shrink-0 px-4 sm:px-8 lg:px-16 pb-4 pt-2">
             <div className="relative rounded-[26px] border border-border/80 bg-card/95 px-3.5 py-2.5 shadow-sm transition-all focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/30">
@@ -1570,34 +1255,6 @@ export function SessionsPage() {
           </div>
         </div>
 
-        {/* Node progress rail */}
-        <div
-          ref={nodeRailResizerRef}
-          className="w-[5px] shrink-0 cursor-col-resize bg-transparent hover:bg-border transition-colors group"
-        />
-        <div
-          className="flex shrink-0 flex-col bg-zinc-50/40 dark:bg-transparent"
-          style={{ width: nodeRailWidth }}
-        >
-          <div className="flex h-14 shrink-0 items-center gap-2 px-3">
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Trace
-            </span>
-            {streaming && (
-              <Badge variant="secondary" className="text-xs">
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                Running
-              </Badge>
-            )}
-          </div>
-          <div className="flex-1 min-h-0 overflow-y-auto [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/80 [&::-webkit-scrollbar-track]:bg-transparent">
-            <NodeRail
-              events={nodeEvents}
-              emptyStateLabel={streamingEmptyStateLabel}
-            />
-            <div ref={nodeRailEndRef} />
-          </div>
-        </div>
       </div>
 
       <Dialog open={providerSettingsOpen} onOpenChange={setProviderSettingsOpen}>

@@ -328,7 +328,7 @@ export function Sidebar() {
             >
               <p className="text-xs truncate text-foreground">
                 <span className="font-mono font-medium">{sessionIdForThread(t).slice(0, 8)}</span>
-                <span className="text-muted-foreground/60"> · {t.agent_key ?? "unknown"} · {t.step_count}s</span>
+                <span className="text-muted-foreground/60"> · {t.agent_key ?? "unknown"}</span>
               </p>
             </button>
             {!selectionMode && (

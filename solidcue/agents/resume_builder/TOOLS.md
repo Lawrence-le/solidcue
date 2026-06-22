@@ -1,4 +1,3 @@
-```markdown
 # TOOLS.md
 
 # Resume Builder Tool Routing
@@ -107,4 +106,3 @@ Goal: update the job tracker spreadsheet after a resume is generated, or create 
 - Prefer `sheets_read_values` for value retrieval over `sheets_get_spreadsheet` with grid data.
 - Use `sheets_append_values` for inserting new tracker entries.
 - Do not claim a tool action succeeded unless the tool returns success.
-```

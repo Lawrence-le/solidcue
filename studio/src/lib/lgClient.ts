@@ -1,11 +1,8 @@
 /**
- * LangGraph Server client for Wave 1 (chat/clarify intents).
+ * LangGraph Server client.
  *
  * Wraps @langchain/langgraph-sdk and adapts its stream events into the
- * existing StreamEvent protocol so handleEvent() in SessionsPage needs no
- * changes.  The two hard requirements from Phase 0 are both enforced here:
- *   1. streamResumable: true on every run creation.
- *   2. chunk.id persisted to sessionStorage so it survives a real page refresh.
+ * StreamEvent protocol consumed by handleEvent() in SessionsPage.
  */
 
 import { Client } from "@langchain/langgraph-sdk"
@@ -90,20 +87,15 @@ export async function lgListThreads(): Promise<ThreadSummary[]> {
 export async function lgDeleteThread(conversationId: string): Promise<boolean> {
   try {
     const c = getClient()
-    // First try sessionStorage mapping.
     let lgThreadId = loadThreadMapping(conversationId)
     if (!lgThreadId) {
-      // Fall back to server-side metadata search.
       const results = await c.threads.search({ metadata: { conversation_id: conversationId }, limit: 1 })
       lgThreadId = results[0]?.thread_id ?? null
     }
-    // If the sidebar row came from a thread without SolidCue metadata,
-    // conversationId is already the LangGraph thread id.
     lgThreadId = lgThreadId ?? conversationId
     if (!lgThreadId) return false
     await c.threads.delete(lgThreadId)
     sessionStorage.removeItem(THREAD_KEY + conversationId)
-    clearPersistedRun(lgThreadId)
     return true
   } catch {
     return false
@@ -135,10 +127,9 @@ export async function lgCancelRun(lgThreadId: string, runId: string): Promise<vo
 }
 
 // ---------------------------------------------------------------------------
-// Run-state persistence (survives real page refresh)
+// Thread mapping (conversationId → lgThreadId)
 // ---------------------------------------------------------------------------
 
-const RUN_KEY = "lg_run:"        // lg_run:<lgThreadId>       → {runId, lastEventId}
 const THREAD_KEY = "lg_thread:"  // lg_thread:<conversationId> → lgThreadId
 
 export function persistThreadMapping(conversationId: string, lgThreadId: string): void {
@@ -147,29 +138,6 @@ export function persistThreadMapping(conversationId: string, lgThreadId: string)
 
 export function loadThreadMapping(conversationId: string): string | null {
   return sessionStorage.getItem(THREAD_KEY + conversationId)
-}
-
-interface PersistedRun {
-  runId: string
-  lastEventId: string | null
-}
-
-function persistRunState(lgThreadId: string, runId: string, lastEventId: string | null): void {
-  sessionStorage.setItem(RUN_KEY + lgThreadId, JSON.stringify({ runId, lastEventId }))
-}
-
-export function loadPersistedRun(lgThreadId: string): PersistedRun | null {
-  const raw = sessionStorage.getItem(RUN_KEY + lgThreadId)
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as PersistedRun
-  } catch {
-    return null
-  }
-}
-
-export function clearPersistedRun(lgThreadId: string): void {
-  sessionStorage.removeItem(RUN_KEY + lgThreadId)
 }
 
 // ---------------------------------------------------------------------------
@@ -250,11 +218,6 @@ function extractMessageDelta(data: unknown): string {
 // Public streaming API
 // ---------------------------------------------------------------------------
 
-/**
- * Start a new run on an existing LangGraph thread and stream it.
- * Persists last_event_id to sessionStorage after every chunk so a page refresh
- * can rejoin via joinLangGraph() without losing gap events.
- */
 export async function streamLangGraph(
   lgThreadId: string,
   userInput: string,
@@ -263,80 +226,22 @@ export async function streamLangGraph(
 ): Promise<void> {
   const c = getClient()
   const assistantId = await getRouterAssistantId()
-  let runId: string | null = null
-  let completed = false
 
   for await (const chunk of c.runs.stream(lgThreadId, assistantId, {
     input: { user_input: userInput },
     streamMode: [...STREAM_MODES],
-    streamResumable: true,
-    onDisconnect: "continue",
+    onDisconnect: "cancel",
     signal,
   })) {
     if (signal?.aborted) break
     const lgChunk = chunk as LgChunk
-
-    if (lgChunk.event === "metadata") {
-      runId = (asRecord(lgChunk.data).run_id as string) ?? null
-    }
-    if (lgChunk.id != null && runId) {
-      persistRunState(lgThreadId, runId, lgChunk.id)
-    }
-
     const mapped = mapChunk(lgChunk, lgThreadId)
     if (mapped) {
       if (mapped.event === "completed") {
-        completed = true
         onEvent(mapped)
         break
       }
       onEvent(mapped)
     }
   }
-
-  if (completed) clearPersistedRun(lgThreadId)
-}
-
-/**
- * Re-attach to a run that was interrupted by a page refresh.
- * Passes last_event_id so the server replays only events after the last
- * received one — zero gap-event loss guaranteed by Phase 0 proof.
- */
-export async function joinLangGraph(
-  lgThreadId: string,
-  runId: string,
-  lastEventId: string | null,
-  onEvent: (e: StreamEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const c = getClient()
-  let completed = false
-
-  // Synthetic start event so handleEvent() initialises UI state correctly
-  onEvent({ event: "start", data: { thread_id: lgThreadId, run_id: runId } } as StreamEvent)
-
-  for await (const chunk of c.runs.joinStream(lgThreadId, runId, {
-    streamMode: [...STREAM_MODES],
-    lastEventId: lastEventId ?? undefined,
-    signal,
-  })) {
-    if (signal?.aborted) break
-    const lgChunk = chunk as LgChunk
-
-    if (lgChunk.id != null) {
-      persistRunState(lgThreadId, runId, lgChunk.id)
-    }
-
-    const mapped = mapChunk(lgChunk, lgThreadId)
-    if (mapped) {
-      if (mapped.event === "completed") {
-        completed = true
-        onEvent(mapped)
-        break
-      }
-      onEvent(mapped)
-    }
-  }
-
-  if (completed) clearPersistedRun(lgThreadId)
 }
