@@ -2,7 +2,7 @@ import json
 from typing import Any
 
 from solidcue.core.graph_agent.prompts.decision_system_prompt import build_decision_system_prompt
-from solidcue.agent_configs.loader import load_agent_skill, load_agent_tools
+from solidcue.agent_configs.loader import load_agent_skill
 from solidcue.tools.loader import load_tool
 from solidcue.tools.schema_registry import get_tool_input_schema
 
@@ -30,7 +30,8 @@ PHASE_INSTRUCTION: dict[str, str] = {
 }
 
 PHASE_WITH_SKILL_GUIDANCE = {"artifact", "source", "synthesis"}
-PHASE_WITH_TOOLS_GUIDANCE = {"artifact", "source"}
+# TOOLS.md is no longer injected here: tool routing is decided at planning time
+# and the decision prompt is already scoped to the task's pinned tool.
 
 TIME_LOCATION_DEFAULTS = {
     "current_time": "Unknown time",
@@ -335,7 +336,6 @@ def _append_agent_static_guidance(system_prompt: str, agent: Any, phase: str) ->
 
     normalized_phase = (phase or "source").strip().casefold()
     include_skill = normalized_phase in PHASE_WITH_SKILL_GUIDANCE
-    include_tools = normalized_phase in PHASE_WITH_TOOLS_GUIDANCE
 
     skill_guidance = load_agent_skill(agent_key)
     if include_skill and skill_guidance:
@@ -346,14 +346,6 @@ def _append_agent_static_guidance(system_prompt: str, agent: Any, phase: str) ->
             f"{skill_text}"
         )
 
-    tools_guidance = load_agent_tools(agent_key)
-    if include_tools and tools_guidance:
-        tools_text = _truncate_guidance(tools_guidance)
-        system_prompt += (
-            f"\n\nTools routing guidance (phase={normalized_phase}):\n"
-            "Follow these tool-selection rules when choosing retrieval and artifact actions.\n"
-            f"{tools_text}"
-        )
     return system_prompt
 
 

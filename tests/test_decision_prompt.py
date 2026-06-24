@@ -72,19 +72,16 @@ def test_system_prompt_includes_output_path_and_filename_hints_from_metadata() -
     assert "Lawrence Lee Resume.docx" in runtime_context
 
 
-def test_system_prompt_includes_tools_guidance_from_tools_md(monkeypatch) -> None:
-    monkeypatch.setattr(
-        decision_prompt_module,
-        "load_agent_tools",
-        lambda _agent_key: "# TOOLS.md\nUse drive_list_by_path before drive_download_file.",
-    )
+def test_system_prompt_omits_tools_routing_guidance() -> None:
+    # TOOLS.md is intentionally no longer injected into the decision prompt:
+    # tool routing is decided at planning time and the prompt is scoped to the
+    # task's pinned tool.
     messages = build_decision_messages(
         agent=DummyAgent(),
         user_input="generate a resume",
     )
     system_prompt = messages[0]["content"]
-    assert "Tools routing guidance" in system_prompt
-    assert "drive_list_by_path before drive_download_file" in system_prompt
+    assert "Tools routing guidance" not in system_prompt
 
 
 def test_system_prompt_includes_skill_guidance_from_skill_md(monkeypatch) -> None:
