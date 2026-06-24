@@ -11,6 +11,7 @@ from solidcue.core.graph_system.nodes import (
     generate_definitions_node,
     initialize_node,
     intent_node,
+    planning_mode_node,
     select_tools_node,
     verify_node,
     write_config_node,
@@ -54,8 +55,10 @@ def _assemble_graph() -> StateGraph:
     graph.add_node("intent",               intent_node)
     graph.add_node("collect_spec",         collect_spec_node)
     # select_tools picks registry tools for the agent (graph_system's own LLM node);
+    # planning_mode classifies static vs dynamic planning (focused LLM node);
     # generate_definitions writes persona/skill/tools sequentially under one span.
     graph.add_node("select_tools",         select_tools_node)
+    graph.add_node("planning_mode",        planning_mode_node)
     graph.add_node("generate_definitions", generate_definitions_node)
     graph.add_node("write_config",         write_config_node)
     graph.add_node("verify",               verify_node)
@@ -67,7 +70,8 @@ def _assemble_graph() -> StateGraph:
     graph.add_conditional_edges("intent", _route_after_intent)
     graph.add_conditional_edges("collect_spec", _route_after_collect_spec)
 
-    graph.add_edge("select_tools", "generate_definitions")
+    graph.add_edge("select_tools", "planning_mode")
+    graph.add_edge("planning_mode", "generate_definitions")
     graph.add_edge("generate_definitions", "write_config")
     graph.add_edge("write_config", "verify")
     graph.add_edge("verify",       "final_output")

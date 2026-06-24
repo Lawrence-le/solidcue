@@ -9,8 +9,20 @@ from solidcue.tools.schema import MCPServerConfig, ToolConfig
 GENERATABLE_TOOL_FIELDS = {"content", "title", "values"}
 
 
+def _resolve_input_schema(tool_config: ToolConfig) -> dict[str, Any] | None:
+    # Prefer the live-refreshed schema (registry); fall back to the YAML snapshot.
+    # Lazy import: schema_registry imports this module, so importing it at module
+    # load time would be circular.
+    try:
+        from solidcue.tools.schema_registry import get_tool_input_schema
+
+        return get_tool_input_schema(tool_config.tool_key)
+    except Exception:
+        return getattr(getattr(tool_config, "mcp", None), "input_schema", None)
+
+
 def get_required_tool_fields(tool_config: ToolConfig) -> list[str]:
-    schema = getattr(getattr(tool_config, "mcp", None), "input_schema", None)
+    schema = _resolve_input_schema(tool_config)
     if not isinstance(schema, dict):
         return []
     required = schema.get("required")
@@ -23,7 +35,7 @@ def get_missing_required_tool_fields(
     tool_config: ToolConfig,
     tool_input: dict[str, Any],
 ) -> list[str]:
-    schema = getattr(getattr(tool_config, "mcp", None), "input_schema", None)
+    schema = _resolve_input_schema(tool_config)
     properties = schema.get("properties") if isinstance(schema, dict) else None
     property_map = properties if isinstance(properties, dict) else {}
 

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 
@@ -9,6 +9,13 @@ class ProviderConfig(BaseModel):
     api_key_env: str
     model: str
     temperature: float | None = None
+
+
+class PlanningPolicy(BaseModel):
+    # static  -> deterministic pipeline; cache the task plan once and reuse it.
+    # dynamic -> plan shape varies per request; re-plan every turn, never cache.
+    # Default is dynamic: a wrong cached plan is more damaging than re-planning.
+    mode: Literal["static", "dynamic"] = "dynamic"
 
 
 class AgentConfig(BaseModel):
@@ -28,4 +35,5 @@ class AgentConfig(BaseModel):
     style: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
 
+    planning: PlanningPolicy = Field(default_factory=PlanningPolicy)
     validation_policy: str | None = None

@@ -4,6 +4,7 @@ from typing import Any
 from solidcue.core.graph_agent.prompts.decision_system_prompt import build_decision_system_prompt
 from solidcue.agent_configs.loader import load_agent_skill, load_agent_tools
 from solidcue.tools.loader import load_tool
+from solidcue.tools.schema_registry import get_tool_input_schema
 
 """
 Decision Prompt Builder
@@ -356,13 +357,30 @@ def _append_agent_static_guidance(system_prompt: str, agent: Any, phase: str) ->
     return system_prompt
 
 
+def _scope_tools_for_task(current_task: dict[str, Any], all_tools: list[str]) -> list[str]:
+    """Pick which tools to describe in the decision prompt for this task.
+
+    - Planned tool present and allowed -> describe only that tool (the contract).
+    - No planned tool (synthesis/respond tasks) -> describe none; no tool is called.
+    - Planned tool missing or not allowed -> fall back to all tools, so a malformed
+      plan never blinds the decision node.
+    """
+    context = current_task.get("context") if isinstance(current_task, dict) else None
+    planned = context.get("tool") if isinstance(context, dict) else None
+    planned = planned.strip() if isinstance(planned, str) else ""
+
+    if planned:
+        return [planned] if planned in all_tools else list(all_tools)
+    return []
+
+
 def _build_tool_descriptions(tools: list[str]) -> str:
     tool_lines: list[str] = []
     for tool_key in tools:
         try:
             tool_config = load_tool(tool_key)
             description = _compact_tool_description(tool_config.description.strip())
-            schema = getattr(getattr(tool_config, "mcp", None), "input_schema", None)
+            schema = get_tool_input_schema(tool_key)
             properties = schema.get("properties") if isinstance(schema, dict) else None
             required_set = set(schema.get("required", [])) if isinstance(schema, dict) else set()
 
@@ -485,11 +503,15 @@ def build_decision_messages(
     output_filenames: list[str] | None = None,
     target_artifacts_source: list[dict[str, Any]] | None = None,
 ):
-    tools = list(agent.tools or [])
+    all_tools = list(agent.tools or [])
     meta = metadata if isinstance(metadata, dict) else {}
     phase = str(meta.get("phase") or "source")
     current_task = meta.get("current_task") if isinstance(meta.get("current_task"), dict) else {}
     current_task_type = str(current_task.get("type") or "")
+    # Scope the described tools to the one this task is contractually bound to
+    # (task plan pins `context.tool`). This mirrors the MANDATORY TOOL SELECTION
+    # directive and avoids dumping every tool's schema on every turn.
+    tools = _scope_tools_for_task(current_task, all_tools)
     tool_descriptions = _build_tool_descriptions(tools)
     time_location_context = _build_time_location_context(meta)
     task_guidance = _build_task_guidance(

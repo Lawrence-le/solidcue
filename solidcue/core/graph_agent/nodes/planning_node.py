@@ -448,6 +448,22 @@ def _save_task_plan_cache(agent_key: str, tasks: list[dict[str, Any]]) -> None:
         pass
 
 
+def _plan_is_cacheable(agent_key: str) -> bool:
+    """Whether this agent's task plan may be cached and reused.
+
+    Only `static` (deterministic-pipeline) agents cache their plan. `dynamic`
+    agents re-plan every turn because the plan shape — not just its inputs —
+    varies per request, so a cached plan would be replayed incorrectly.
+    Defaults to non-cacheable on any load failure (the safe direction).
+    """
+    if not agent_key:
+        return False
+    try:
+        return load_agent(agent_key).planning.mode == "static"
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Section: planning pipeline helpers
 # ---------------------------------------------------------------------------
@@ -506,7 +522,10 @@ async def planning_node(state: AgentState) -> dict[str, Any]:
     # cache stores the source-agnostic plan (URLs stripped, positional item_keys),
     # so it is reusable across requests with different sources and needs no
     # re-normalization here.
-    cached = _load_task_plan_cache(agent_key) if agent_key else None
+    # The cache is only consulted for `static` agents. `dynamic` agents re-plan
+    # every turn, so a stale request-specific plan is never read back or written.
+    plan_cacheable = _plan_is_cacheable(agent_key)
+    cached = _load_task_plan_cache(agent_key) if plan_cacheable else None
     if cached is not None:
         task_plan = cached
         metric_planning: dict[str, Any] = {}
@@ -518,7 +537,7 @@ async def planning_node(state: AgentState) -> dict[str, Any]:
             raw_task_plan,
             target_artifacts_source=state.get("target_artifacts_source") or [],
         )
-        if agent_key and cacheable:
+        if plan_cacheable and cacheable:
             _save_task_plan_cache(agent_key, task_plan)
 
     # Phase 3: finalize planning state for downstream nodes.

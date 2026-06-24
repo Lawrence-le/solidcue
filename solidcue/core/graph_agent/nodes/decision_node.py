@@ -11,6 +11,7 @@ from solidcue.core.graph_agent.state.schema import AgentState, ToolCallState
 from solidcue.core.utils.metrics import build_metric_state_delta, timed_async_stream_generate
 from solidcue.core.graph_agent.prompts.decision_prompt import build_decision_messages
 from solidcue.tools.loader import load_tool, get_missing_required_tool_fields, split_missing_tool_fields
+from solidcue.tools.schema_registry import ensure_schemas_warmed
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,11 @@ class DecisionValidator:
 # --- Primary Node Function ---
 
 async def decision_node(state: AgentState) -> dict[str, Any]:
+    # Refresh MCP tool schemas from the live servers once per process (no-op after
+    # the first call). Prompt + validator then read the fresh schemas; on any
+    # server failure they transparently fall back to the YAML snapshot.
+    await ensure_schemas_warmed()
+
     agent_key = state.get("agent_key")
     user_input = state.get("user_input", "")
     phase = state.get("phase") or "source"

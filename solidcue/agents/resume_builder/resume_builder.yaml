@@ -1,7 +1,7 @@
 agent_id: b905caa2-8e05-47d3-b30a-9073cb0ab207
 agent_key: resume_builder
 name: Resume Builder
-description: Build resume that is industry standard and ATS compatible.
+description: Builds an industry-standard, ATS-compatible resume tailored to a specific job. Retrieves the job description (JD) from a posting URL and the user's master resume, then tailors them into a finished, formatted resume. Use for creating or tailoring resumes — not for archiving JDs.
 provider:
   type: openai_compatible
   base_url: https://api.stepfun.ai/step_plan/v1
@@ -41,4 +41,6 @@ tools:
 allowed_tasks: []
 style: {}
 constraints: {}
+planning:
+  mode: static
 validation_policy: null

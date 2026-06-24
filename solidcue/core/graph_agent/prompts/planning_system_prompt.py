@@ -60,7 +60,10 @@ For every task, define these fields in order:
 
 - **id**: Sequential identifier (`task_1`, `task_2`, ...).
 - **type**: One of [source_gathering, synthesis, artifact_generation].
-- **description**: Concise, objective goal (one sentence).
+- **description**: Concise, objective goal (one sentence). Describe the action
+  generically so the plan is reusable across requests. Refer to any user-supplied
+  input by its ROLE (e.g. "the requested item", "the provided source"), never by
+  its concrete value (see Rule 5.7).
 - **requires**: One label in `snake_case` Noun+Past Participle (e.g., `data_retrieved`).
   Must be what THIS task's tool produces (see Rules below).
 - **context**: Tool name + actionable parameters (IDs, paths, URLs, SKILL.md section refs).
@@ -98,9 +101,33 @@ For every task, define these fields in order:
 - Do NOT create process-only synthesis like "analyze", "brainstorm", or "refine" without concrete output.
 
 ## 5.6 Multi-Item Source Binding
-- For requests with multiple source items, each synthesis/artifact task must include `context.item_key`.
-- `item_key` must be consistent for all tasks that belong to the same source item.
-- Do not invent `item_key` values. Always use the `item_key` provided in Runtime Context.
+- Each task that operates on a source item must include `context.item_key`.
+- `item_key` is a POSITIONAL SLOT, not a source identity. Use `item_N`, where N is
+  the 1-based position of the source item: `item_1` for the first (or only) source
+  item, `item_2` for the second, and so on.
+- All tasks belonging to the same source item MUST share the same `item_key`.
+- NEVER derive `item_key` from a request value (URL, identifier, filename, slug).
+  The runtime maps these positional slots to the actual sources, so a slot like
+  `item_1` stays valid on the next request while a request-derived key goes stale.
+- ✗ WRONG: `"item_key": "<an id or slug taken from the request>"` (breaks reuse)
+- ✓ CORRECT: `"item_key": "item_1"` (positional slot)
+
+## 5.7 Request-Agnostic Plan — No Unique Values Anywhere
+- The plan is a REUSABLE TEMPLATE: only the inputs change between runs. The same
+  plan is replayed on the next request, so any value taken from THIS request will
+  go stale.
+- In EVERY field (`description`, `requires`, `context`), refer to user-supplied
+  inputs by their ROLE, never by their literal value. This includes named
+  entities, URLs, file paths derived from the request, dates, identifiers, and
+  request-specific counts.
+- The concrete value is bound at runtime from `target_artifacts_source` via
+  `item_key`. Your job is to name the slot, not fill it.
+- ✗ WRONG: "Retrieve the record for <the specific name the user gave>"
+- ✓ CORRECT: "Retrieve the record for the requested item"
+- ✗ WRONG: "Format the result to match the <list of specific prior items> table"
+- ✓ CORRECT: "Format the result to match the existing comparison table"
+- If you cannot describe a step without naming a value from the request, describe
+  the step's PURPOSE instead and let the runtime supply the value.
 
 ================================================================================
 # 6. FINAL VALIDATION
@@ -114,6 +141,7 @@ Before submitting the plan, verify:
 4. **Delegation check**: Are any column/field/format specs duplicated from Skill Guidance? If yes, remove them from context.
 5. **Format check**: Are all `requires` in `snake_case` Noun+Past Participle? No imperatives.
 6. **Multi-item binding check**: If multiple source items exist, does every synthesis/artifact task include `item_key` (or equivalent explicit source reference)?
+7. **Reusability check**: Re-read every `description`, `requires`, and `context`. Is any value copied from the user's request (a named entity, URL, path, date, identifier, or count)? If yes, replace it with its generic role so the plan stays reusable on the next request. In particular, every `item_key` must be a positional slot (`item_1`, `item_2`, ...), never a request-derived id or slug.
 
 ================================================================================
 # FORBIDDEN PATTERNS (NEVER OUTPUT THESE)
@@ -123,6 +151,7 @@ Before submitting the plan, verify:
 - `"tool": "tool1, tool2"` — split into multiple tasks
 - `"columns": [...]` duplicated from SKILL.md — remove duplicated spec
 - `"url": "https://..."` in context — URLs come from `target_artifacts_source` at runtime, never bake them in
+- Any value lifted from the user's request — a named entity, URL, path, date, identifier, or count — appearing in a `description`, `requires`, or `context`. Refer to it by its role instead (e.g. "the requested item"), so the cached plan stays valid on the next request
 - `"requires": ["Get the data"]` — use past participle: `["data_retrieved"]`
 - Tasks for "chatting" with the user — there's a final response node for that
 """.strip()

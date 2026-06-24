@@ -3,6 +3,8 @@
 Execution (run, stream, resume) lives in ``solidcue.services.run_engine``.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 from solidcue.agent_configs.loader import (
@@ -11,7 +13,7 @@ from solidcue.agent_configs.loader import (
     save_agent_skill,
     save_agent_tools,
 )
-from solidcue.agent_configs.schema import AgentConfig, ProviderConfig
+from solidcue.agent_configs.schema import AgentConfig, PlanningPolicy, ProviderConfig
 from solidcue.observability import generate_env_key, write_env_key
 
 
@@ -40,6 +42,7 @@ class CreateAgentInput(BaseModel):
     writer_model: str | None = None
     writer_temperature: float | None = None
     selected_tools: list[str]
+    planning_mode: Literal["static", "dynamic"] = "dynamic"
 
 
 def _build_provider_config(
@@ -115,6 +118,7 @@ def _build_agent_config_and_env(input_data: "CreateAgentInput") -> tuple[AgentCo
         reviewer_provider=reviewer_provider,
         writer_provider=writer_provider,
         tools=input_data.selected_tools,
+        planning=PlanningPolicy(mode=input_data.planning_mode),
     )
     return config, brain_env_key, lite_env_key, reviewer_env_key, writer_env_key
 

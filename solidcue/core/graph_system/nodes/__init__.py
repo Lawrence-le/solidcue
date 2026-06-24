@@ -7,6 +7,7 @@ from solidcue.core.graph_system.nodes.generate_definition_nodes import (
 )
 from solidcue.core.graph_system.nodes.initialize_node import initialize_node
 from solidcue.core.graph_system.nodes.intent_node import intent_node
+from solidcue.core.graph_system.nodes.planning_mode_node import planning_mode_node
 from solidcue.core.graph_system.nodes.select_tools_node import select_tools_node
 from solidcue.core.graph_system.nodes.verify_node import verify_node
 from solidcue.core.graph_system.nodes.write_config_node import write_config_node
@@ -17,6 +18,7 @@ __all__ = [
     "generate_definitions_node",
     "initialize_node",
     "intent_node",
+    "planning_mode_node",
     "select_tools_node",
     "verify_node",
     "write_config_node",

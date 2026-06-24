@@ -44,8 +44,8 @@ solidcue/models/
 # Agent configs (domain-specific, not shared)
 solidcue/agents/
 
-# Tool configs
-solidcue/tools/
+# Tool configs (data only — tool code under solidcue/tools/ stays tracked)
+solidcue/tools/configs/
 
 # User profile configs
 solidcue/user/
