@@ -47,6 +47,10 @@ class AgentState(TypedDict, total=False):
     ] | None
     validation_report: dict[str, Any]
     final_response: str
+    # Structured record of what this run produced (tool evidence + artifact refs).
+    # Surfaced so the router can persist it and answer reshape follow-ups without
+    # re-dispatching the agent. Full-content (not the truncated prompt preview).
+    result_data: dict[str, Any]
 
     # --- Source / artifact discovery ---
     source_paths: list[str]

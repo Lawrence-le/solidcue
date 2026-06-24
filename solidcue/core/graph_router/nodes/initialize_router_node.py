@@ -59,8 +59,21 @@ def initialize_router_node(state: RouterState) -> dict[str, Any]:
     # The LangGraph Server thread checkpoint accumulates history across turns, so
     # reading state["chat_history"] in downstream nodes gives the full conversation
     # history for this thread.
+    #
+    # Guard against re-appending the same turn: chat_history uses an additive
+    # reducer, so if this node runs again for a turn whose user_input is still in
+    # state (e.g. a replay/resume), a naive append would duplicate the user
+    # message. Skip when the last entry is already this exact user turn.
     user_input = normalize_text(state.get("user_input"))
     if user_input:
-        updates["chat_history"] = [{"role": "user", "content": user_input}]
+        history = state.get("chat_history") or []
+        last = history[-1] if history else None
+        already_appended = (
+            isinstance(last, dict)
+            and last.get("role") == "user"
+            and last.get("content") == user_input
+        )
+        if not already_appended:
+            updates["chat_history"] = [{"role": "user", "content": user_input}]
 
     return updates

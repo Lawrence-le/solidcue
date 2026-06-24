@@ -42,7 +42,7 @@ def _build_router_graph():
 def _stub_router_provider(monkeypatch):
     monkeypatch.setattr(
         intent_router_module,
-        "get_runtime_router_provider",
+        "resolve_router_provider",
         lambda _thread_id: _RouterProvider(),
     )
 
@@ -69,7 +69,7 @@ class _ReadyRouterProvider:
 async def test_intent_router_seeds_spec_when_ready(monkeypatch):
     monkeypatch.setattr(
         intent_router_module,
-        "get_runtime_router_provider",
+        "resolve_router_provider",
         lambda _thread_id: _ReadyRouterProvider(),
     )
 
@@ -91,7 +91,7 @@ async def test_router_create_agent_completes_when_ready(tmp_path, monkeypatch):
     written = _wire_stubs(tmp_path, monkeypatch, agent_key="weather_assistant")
     monkeypatch.setattr(
         intent_router_module,
-        "get_runtime_router_provider",
+        "resolve_router_provider",
         lambda _thread_id: _ReadyRouterProvider(),
     )
     # Inherit a workspace provider so collect_spec validates without a form.

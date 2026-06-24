@@ -75,6 +75,7 @@ type RunState =
 type ChatMessageInput =
   | { role: "user"; content: string }
   | { role: "assistant"; content: string }
+  | { role: "subagent"; intro: string; steps: SubagentStep[] }
   | { role: "interrupt"; payload: InterruptPayload; threadId: string }
   | { role: "error"; content: string }
   | { role: "system"; content: string };
@@ -299,23 +300,18 @@ function StepHistory({ events }: { events: NodeEvent[] }) {
 
 function SubagentActivity({
   steps,
-  intro,
   resolveName,
 }: {
   steps: SubagentStep[];
-  intro: string;
   resolveName: (agentKey: string) => string;
 }) {
-  if (steps.length === 0 && !intro) return null;
+  if (steps.length === 0) return null;
 
   return (
     <div className="space-y-1.5 px-1">
-      <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground/70">
-        Plan
+      <p className="gradient-sweep-text text-[10px] font-medium uppercase tracking-[0.18em]">
+        Dispatched to sub agent
       </p>
-      {intro && (
-        <p className="text-xs leading-snug text-foreground/80">{intro}</p>
-      )}
       <div className="space-y-1.5">
         {[...steps]
           .sort((a, b) => a.stepIndex - b.stepIndex)
@@ -445,8 +441,6 @@ export function SessionsPage() {
   const [runId, setRunId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [nodeEvents, setNodeEvents] = useState<NodeEvent[]>([]);
-  const [subagentSteps, setSubagentSteps] = useState<SubagentStep[]>([]);
-  const [planIntro, setPlanIntro] = useState<string>("");
   const [runState, setRunState] = useState<RunState>("idle");
   const [userInput, setUserInput] = useState("");
   const [loadingSession, setLoadingSession] = useState(false);
@@ -463,6 +457,10 @@ export function SessionsPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
+  // Id of the in-stream sub-agent activity message for the current turn, so
+  // subagent/subagent_delta events update the right inline block (not a global
+  // singleton anchored to a fixed slot).
+  const subagentMsgIdRef = useRef<string | null>(null);
   const pendingConversationIdRef = useRef<string | null>(null);
   const runStartedAtRef = useRef<number | null>(null);
   // LangGraph Server thread ID for the current conversation (different from the
@@ -845,45 +843,78 @@ export function SessionsPage() {
       } else if (e.event === "plan") {
         // The router (manager) announces what it will do before any worker runs.
         // Pre-populate every step as pending so the user sees the full plan upfront.
-        setPlanIntro(e.data.intro || "");
-        setSubagentSteps(
-          e.data.steps.map((s) => ({
-            agentKey: s.agent_key,
-            subTask: s.sub_task,
-            stepIndex: s.step_index,
-            stepCount: e.data.step_count,
-            status: "pending" as const,
-            output: "",
-          })),
-        );
+        // Drop the empty assistant bubble — the sub-agent activity becomes its own
+        // in-stream message so it renders inline with this turn (above the answer
+        // that streams in afterwards) instead of in a fixed slot at the bottom.
+        const emptyId = streamingAssistantIdRef.current;
+        if (emptyId) {
+          setMessages((prev) =>
+            prev.filter((m) => !(m.id === emptyId && m.role === "assistant")),
+          );
+          streamingAssistantIdRef.current = null;
+        }
+        const id = msgId();
+        subagentMsgIdRef.current = id;
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "subagent",
+            id,
+            intro: e.data.intro || "",
+            steps: e.data.steps.map((s) => ({
+              agentKey: s.agent_key,
+              subTask: s.sub_task,
+              stepIndex: s.step_index,
+              stepCount: e.data.step_count,
+              status: "pending" as const,
+              output: "",
+            })),
+          },
+        ]);
       } else if (e.event === "subagent") {
         // The router (manager) is dispatching a worker. Stay in this chat —
-        // just track which sub-agent is working and its status.
+        // just track which sub-agent is working and its status, scoped to the
+        // current turn's sub-agent message.
         const d = e.data;
-        setSubagentSteps((prev) => {
-          const existing = prev.findIndex((s) => s.stepIndex === d.step_index);
-          const next: SubagentStep = {
-            agentKey: d.agent_key,
-            subTask: d.sub_task,
-            stepIndex: d.step_index,
-            stepCount: d.step_count,
-            status: d.status,
-            output: existing >= 0 ? prev[existing].output : "",
-          };
-          if (existing >= 0) {
-            const copy = [...prev];
-            copy[existing] = { ...copy[existing], ...next, output: copy[existing].output };
-            return copy;
-          }
-          return [...prev, next];
-        });
+        const id = subagentMsgIdRef.current;
+        if (!id) return;
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== id || m.role !== "subagent") return m;
+            const existing = m.steps.findIndex((s) => s.stepIndex === d.step_index);
+            const next: SubagentStep = {
+              agentKey: d.agent_key,
+              subTask: d.sub_task,
+              stepIndex: d.step_index,
+              stepCount: d.step_count,
+              status: d.status,
+              output: existing >= 0 ? m.steps[existing].output : "",
+            };
+            const steps =
+              existing >= 0
+                ? m.steps.map((s, i) =>
+                    i === existing ? { ...s, ...next, output: s.output } : s,
+                  )
+                : [...m.steps, next];
+            return { ...m, steps };
+          }),
+        );
       } else if (e.event === "subagent_delta") {
         const d = e.data;
-        setSubagentSteps((prev) =>
-          prev.map((s) =>
-            s.stepIndex === d.step_index
-              ? { ...s, output: s.output + d.delta }
-              : s,
+        const id = subagentMsgIdRef.current;
+        if (!id) return;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === id && m.role === "subagent"
+              ? {
+                  ...m,
+                  steps: m.steps.map((s) =>
+                    s.stepIndex === d.step_index
+                      ? { ...s, output: s.output + d.delta }
+                      : s,
+                  ),
+                }
+              : m,
           ),
         );
       } else if (e.event === "interrupt") {
@@ -903,6 +934,15 @@ export function SessionsPage() {
         finalizeWorkedTimer();
         abortRef.current = null;
         finalizeStreamingAssistant(e.data.output);
+        // The sub-agent dispatch block is transient progress UI — drop it once
+        // the run completes so only the final answer remains.
+        const subId = subagentMsgIdRef.current;
+        if (subId) {
+          setMessages((prev) =>
+            prev.filter((m) => !(m.id === subId && m.role === "subagent")),
+          );
+          subagentMsgIdRef.current = null;
+        }
         qc.invalidateQueries({ queryKey: ["threads"] });
       } else if (e.event === "cancelled") {
         setNodeEvents((prev) => prev.map((ev) => ({ ...ev, status: "done" })));
@@ -938,8 +978,7 @@ export function SessionsPage() {
     abortRef.current = ctrl;
     setRunState("streaming");
     setNodeEvents([]);
-    setSubagentSteps([]);
-    setPlanIntro("");
+    subagentMsgIdRef.current = null;
 
     const effectiveConversationId = conversationIdOverride || conversationId || undefined;
 
@@ -949,9 +988,19 @@ export function SessionsPage() {
       // first message for a conversation the thread doesn't exist yet; create it
       // and store the mapping so page reloads can look it up.
       if (!lgThreadIdRef.current && effectiveConversationId) {
-        const lgThreadId = await lgCreateThread(effectiveConversationId);
-        lgThreadIdRef.current = lgThreadId;
-        persistThreadMapping(effectiveConversationId, lgThreadId);
+        // Rehydrate the existing LangGraph thread for this conversation before
+        // creating a new one. lgThreadIdRef is in-memory only, so on a page
+        // reload / reopened conversation it is null even though the thread
+        // already exists — creating a fresh thread here would split the
+        // conversation across two threads (duplicated / missing history).
+        const existing = loadThreadMapping(effectiveConversationId);
+        if (existing) {
+          lgThreadIdRef.current = existing;
+        } else {
+          const lgThreadId = await lgCreateThread(effectiveConversationId);
+          lgThreadIdRef.current = lgThreadId;
+          persistThreadMapping(effectiveConversationId, lgThreadId);
+        }
       }
 
       if (lgThreadIdRef.current) {
@@ -1104,6 +1153,29 @@ export function SessionsPage() {
                       </div>
                     </div>
                   )}
+                  {msg.role === "subagent" && (
+                    <div className="animate-in fade-in duration-300 space-y-2">
+                      {msg.intro && (
+                        <p className="px-1 text-sm text-foreground/80">
+                          {msg.intro}
+                        </p>
+                      )}
+                      <SubagentActivity
+                        steps={msg.steps}
+                        resolveName={(key) =>
+                          agents?.find((a) => a.agent_key === key)?.name ?? key
+                        }
+                      />
+                      {showWorkedTimer && (
+                        <div className="px-1">
+                          <div className="mb-2 h-px w-full bg-border/60" />
+                          <p className="text-[11px] text-muted-foreground/70">
+                            {formatWorkedLabel(displayedWorkedSeconds)}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {msg.role === "interrupt" && (
                     <ApprovalCard
                       payload={msg.payload}
@@ -1134,28 +1206,16 @@ export function SessionsPage() {
                   </div>
                 )}
 
-                {nodeEvents.length > 0 && (
-                  <StepHistory events={nodeEvents} />
-                )}
-
-                {(subagentSteps.length > 0 || planIntro) && (
-                  <SubagentActivity
-                    steps={subagentSteps}
-                    intro={planIntro}
-                    resolveName={(key) =>
-                      agents?.find((a) => a.agent_key === key)?.name ?? key
-                    }
-                  />
-                )}
-
-                {showWorkedTimer && (
-                  <div className="px-1">
-                    <div className="mb-2 h-px w-full bg-border/60" />
-                    <p className="text-[11px] text-muted-foreground/70">
-                      {formatWorkedLabel(displayedWorkedSeconds)}
-                    </p>
-                  </div>
-                )}
+                {showWorkedTimer &&
+                  streaming &&
+                  !messages.some((m) => m.role === "subagent") && (
+                    <div className="px-1">
+                      <div className="mb-2 h-px w-full bg-border/60" />
+                      <p className="text-[11px] text-muted-foreground/70">
+                        {formatWorkedLabel(displayedWorkedSeconds)}
+                      </p>
+                    </div>
+                  )}
 
                 {streamingEmptyStateLabel && (
                   <div className="px-1">

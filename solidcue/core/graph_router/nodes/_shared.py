@@ -28,6 +28,34 @@ def normalize_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def available_agents() -> list[dict[str, str]]:
+    """The agents the router may route work to (key, name, description)."""
+    agents: list[dict[str, str]] = []
+    for agent in list_agents():
+        agent_key = normalize_text(getattr(agent, "agent_key", ""))
+        if not agent_key:
+            continue
+        agents.append(
+            {
+                "agent_key": agent_key,
+                "name": normalize_text(getattr(agent, "name", "")),
+                "description": normalize_text(getattr(agent, "description", "")),
+            }
+        )
+    return agents
+
+
+def resolve_router_provider(thread_id: str):
+    """Runtime router provider for the thread, falling back to the profile provider.
+
+    May raise ValueError if the configured provider is invalid (caller handles).
+    """
+    provider = get_runtime_router_provider(thread_id)
+    if provider is None:
+        provider = _PROFILE_ROUTER_PROVIDER
+    return provider
+
+
 def select_target_agent_key(user_input: str) -> str:
     lowered = user_input.casefold()
     available_agent_keys = {

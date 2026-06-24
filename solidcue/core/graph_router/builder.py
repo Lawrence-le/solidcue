@@ -6,11 +6,13 @@ from typing import Any, Literal
 from langgraph.graph import END, StateGraph
 
 from solidcue.core.graph_router.nodes import (
+    build_plan_node,
     execute_plan_node,
     final_output_node,
     handoff_node,
     initialize_router_node,
     intent_router_node,
+    reshape_node,
 )
 from solidcue.core.graph_router.state.schema import RouterState
 
@@ -28,21 +30,32 @@ def _resolve_recursion_limit() -> int:
 
 def _route_after_intent_router(
     state: RouterState,
-) -> Literal["create_agent_system", "execute_plan", "handoff", "final_output"]:
-    # create_agent intent: keep conversing (final_output) until the router has
-    # gathered a ready spec (name + purpose). Once agent_spec is set, delegate to
-    # the system subgraph to actually build the agent.
-    if state.get("router_intent") == "create_agent":
+) -> Literal["create_agent_system", "build_plan", "reshape", "final_output"]:
+    # Routing is purely on the classified intent — the intent router no longer builds
+    # the plan; that is build_plan_node's job (reached only for the task intent).
+    intent = state.get("router_intent")
+    if intent == "create_agent":
+        # Keep conversing (final_output) until a ready spec (name + purpose) exists;
+        # once agent_spec is set, delegate to the system subgraph to build the agent.
         spec = state.get("agent_spec")
         if isinstance(spec, dict) and spec.get("agent_key") and spec.get("name"):
             return "create_agent_system"
         return "final_output"
-    if state.get("router_next") == "handoff":
-        # task intent with a plan → execute_plan (Wave 2 fan-out path)
-        if state.get("plan"):
-            return "execute_plan"
-        # legacy no-plan route → old handoff stub
-        return "handoff"
+    if intent == "reshape":
+        # Re-present retained data without re-dispatching, from agent_results[].data.
+        return "reshape"
+    if intent == "task":
+        # Write the execution plan in a dedicated node, then execute it.
+        return "build_plan"
+    return "final_output"
+
+
+def _route_after_build_plan(
+    state: RouterState,
+) -> Literal["execute_plan", "final_output"]:
+    # build_plan produced a plan -> execute it; otherwise it set a clarify message.
+    if state.get("plan"):
+        return "execute_plan"
     return "final_output"
 
 
@@ -53,7 +66,9 @@ def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
 
     graph.add_node("initialize", initialize_router_node)
     graph.add_node("intent_router", intent_router_node)
+    graph.add_node("build_plan", build_plan_node)
     graph.add_node("execute_plan", execute_plan_node)
+    graph.add_node("reshape", reshape_node)
     graph.add_node("handoff", handoff_node)
     # System graph embedded as a subgraph node: runs the create_agent flow and
     # surfaces its form interrupt through this graph's run.
@@ -64,7 +79,9 @@ def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
 
     graph.add_edge("initialize", "intent_router")
     graph.add_conditional_edges("intent_router", _route_after_intent_router)
+    graph.add_conditional_edges("build_plan", _route_after_build_plan)
     graph.add_edge("execute_plan", "final_output")
+    graph.add_edge("reshape", "final_output")
     graph.add_edge("handoff", "final_output")
     graph.add_edge("create_agent_system", "final_output")
     graph.add_edge("final_output", END)

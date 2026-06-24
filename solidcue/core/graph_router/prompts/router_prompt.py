@@ -45,12 +45,34 @@ def _format_metadata(metadata: dict[str, Any] | None) -> str:
         return str(metadata)
 
 
+def _format_retained_results(agent_results: list[dict[str, Any]] | None) -> str:
+    """Summarise what earlier runs already gathered and still have in memory.
+
+    The router uses this to tell a `reshape` (re-present retained data) from a
+    `task` (fetch something new). Only entries carrying structured `data` are
+    listed, since only those can actually be reshaped without re-dispatching.
+    """
+    if not isinstance(agent_results, list) or not agent_results:
+        return "None"
+    lines: list[str] = []
+    for result in agent_results:
+        if not isinstance(result, dict):
+            continue
+        if not (isinstance(result.get("data"), dict) and result.get("data")):
+            continue
+        agent_key = str(result.get("agent_key") or "").strip() or "unknown"
+        sub_task = str(result.get("sub_task") or "").strip()
+        lines.append(f"- {agent_key}: {sub_task} (structured data retained, available to reshape)")
+    return "\n".join(lines) if lines else "None"
+
+
 def build_router_messages(
     *,
     user_input: str,
     chat_history: list[dict[str, str]] | None,
     available_agents: list[dict[str, str]],
     metadata: dict[str, Any] | None = None,
+    agent_results: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     runtime_context = (
         "=== RUNTIME CONTEXT ===\n"
@@ -58,6 +80,8 @@ def build_router_messages(
         f"{_format_agents(available_agents)}\n\n"
         "METADATA:\n"
         f"{_format_metadata(metadata)}\n\n"
+        "RETAINED_RESULTS (data already gathered earlier this session):\n"
+        f"{_format_retained_results(agent_results)}\n\n"
         "CHAT_HISTORY:\n"
         f"{_format_chat_history(chat_history)}\n\n"
         "CURRENT_USER_INPUT:\n"

@@ -5,5 +5,5 @@ router_provider:
   base_url: https://api.stepfun.ai/step_plan/v1
   api_key_env: ROUTER_OPENAI_COMPATIBLE_API_KEY
   model: step-3.5-flash
-  temperature: 0.2
+  temperature: 0
 preferences: {}

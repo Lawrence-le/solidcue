@@ -47,6 +47,9 @@ Main entrypoint that chooses conversational fast-path, LLM output, or fallback.
 
 _SENSITIVE_QUERY_PARAM_RE = re.compile(r"([?&](?:api_key|key|token|access_token)=)[^&\s]+", re.IGNORECASE)
 _MAX_CONTENT_PREVIEW_CHARS = 1200
+# Larger bound used when retaining results for cross-turn reuse (reshape follow-ups).
+# Still bounded so persisted router state can't grow without limit.
+_MAX_STORED_CONTENT_CHARS = 20000
 
 
 def _sanitize_error_text(text: str) -> str:
@@ -127,7 +130,9 @@ def _build_fallback_output(state: AgentState) -> str:
     return "I couldn't generate a final response for this request."
 
 
-def _compact_successful_tool_history(state: AgentState) -> list[dict[str, Any]]:
+def _compact_successful_tool_history(
+    state: AgentState, *, content_max_chars: int = _MAX_CONTENT_PREVIEW_CHARS
+) -> list[dict[str, Any]]:
     history = state.get("tool_call_history")
     if not isinstance(history, list) or not history:
         return []
@@ -146,7 +151,7 @@ def _compact_successful_tool_history(state: AgentState) -> list[dict[str, Any]]:
                 "tool_name": entry.get("tool_name"),
                 "tool_input": entry.get("tool_input") if isinstance(entry.get("tool_input"), dict) else {},
                 "accomplishments": entry.get("accomplishments") if isinstance(entry.get("accomplishments"), list) else [],
-                "content": _truncate_content_preview(execution_result.get("content")),
+                "content": _truncate_content_preview(execution_result.get("content"), content_max_chars),
             }
         )
 
@@ -206,8 +211,10 @@ def _uploaded_artifacts_by_item(state: AgentState) -> list[dict[str, Any]]:
     return list(uploads.values())
 
 
-def _build_final_output_payload(state: AgentState) -> dict[str, Any] | None:
-    successful_tool_history = _compact_successful_tool_history(state)
+def _build_final_output_payload(
+    state: AgentState, *, content_max_chars: int = _MAX_CONTENT_PREVIEW_CHARS
+) -> dict[str, Any] | None:
+    successful_tool_history = _compact_successful_tool_history(state, content_max_chars=content_max_chars)
     if not successful_tool_history:
         return None
 
@@ -268,7 +275,12 @@ async def final_output_node(state: AgentState) -> dict[str, Any]:
     llm_output, metric_final_output = await _llm_compose_user_facing_output(state)
     final_output = resolve_final_output(state, llm_output)
 
+    # Retain the run's structured result (full content) so the router can persist
+    # it and answer reshape follow-ups without re-dispatching the agent.
+    result_data = _build_final_output_payload(state, content_max_chars=_MAX_STORED_CONTENT_CHARS) or {}
+
     return {
         "final_response": final_output,
+        "result_data": result_data,
         **build_metric_state_delta("final_output", "metric_final_output", metric_final_output),
     }

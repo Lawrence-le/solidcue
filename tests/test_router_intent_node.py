@@ -19,21 +19,14 @@ class _RouterProvider:
 @pytest.mark.asyncio
 async def test_intent_router_returns_json_payload(monkeypatch) -> None:
     provider = _RouterProvider(
-        output_json=(
-            '{"assistant_draft":"I can help with that.","router_intent":"clarify","router_next":"final_output","target_agent_key":"","route_reason":"LLM response","handoff":{}}'
-        )
+        output_json='{"assistant_draft":"I can help with that.","router_intent":"clarify","route_reason":"LLM response"}'
     )
-
-    monkeypatch.setattr(
-        intent_router_module,
-        "get_runtime_router_provider",
-        lambda _thread_id: provider,
-    )
+    monkeypatch.setattr(intent_router_module, "resolve_router_provider", lambda _thread_id: provider)
 
     result = await intent_router_node(
         {
             "thread_id": "thread-1",
-            "user_input": "can you generate a resume for https://www.linkedin.com/jobs/view/4416496575 ?",
+            "user_input": "can you generate a resume for https://example.com/jobs/1 ?",
             "chat_history": [],
         },
     )
@@ -42,56 +35,46 @@ async def test_intent_router_returns_json_payload(monkeypatch) -> None:
     assert result["router_next"] == "final_output"
     assert result["final_response"] == "I can help with that."
     assert result["assistant_draft"] == "I can help with that."
-    assert result["handoff"] == {}
+    # Classification-only: the intent router no longer emits a plan or handoff.
+    assert "plan" not in result
+    assert "handoff" not in result
 
 
 @pytest.mark.asyncio
 async def test_intent_router_returns_clarify_when_provider_invalid(monkeypatch) -> None:
-    # When the router provider raises ValueError (misconfigured / missing),
-    # the node must return clarify + a message telling the user to configure a provider.
-    # It must NOT attempt to route the request as a task.
     def _raise_missing(_thread_id):
         raise ValueError("No provider configured")
 
-    monkeypatch.setattr(intent_router_module, "get_runtime_router_provider", _raise_missing)
+    monkeypatch.setattr(intent_router_module, "resolve_router_provider", _raise_missing)
 
     result = await intent_router_node(
         {
             "thread_id": "thread-2",
-            "user_input": "generate a resume for https://www.linkedin.com/jobs/view/4416496575",
+            "user_input": "generate a resume for https://example.com/jobs/1",
             "chat_history": [],
         }
     )
 
     assert result["router_intent"] == "clarify"
     assert result["router_next"] == "final_output"
-    # Response must mention "provider" so the user knows what to fix.
     assert "provider" in str(result["final_response"]).casefold()
 
 
 @pytest.mark.asyncio
-async def test_intent_router_passes_through_task_handoff_from_llm(monkeypatch) -> None:
+async def test_intent_router_classifies_task_without_building_a_plan(monkeypatch) -> None:
+    # The intent router only classifies; planning (plan/handoff/target_agent_key) is
+    # now build_plan_node's responsibility.
     provider = _RouterProvider(
-        output_json=(
-            '{"assistant_draft":"I\'ll route this to the JD Archiver.","router_intent":"task","router_next":"handoff","target_agent_key":"jd_archiver","route_reason":"Task requested","handoff":{"action":"route_agent","task_input":"archive this job","target_agent_key":"jd_archiver"}}'
-        ),
+        output_json='{"assistant_draft":"On it.","router_intent":"task","route_reason":"Task requested"}'
     )
-    monkeypatch.setattr(
-        intent_router_module,
-        "get_runtime_router_provider",
-        lambda _thread_id: provider,
-    )
+    monkeypatch.setattr(intent_router_module, "resolve_router_provider", lambda _thread_id: provider)
 
     result = await intent_router_node(
-        {
-            "thread_id": "thread-3",
-            "user_input": "archive this job",
-            "chat_history": [],
-        }
+        {"thread_id": "thread-3", "user_input": "archive this job", "chat_history": []}
     )
 
     assert result["router_intent"] == "task"
-    assert result["router_next"] == "handoff"
-    assert result["target_agent_key"] == "jd_archiver"
-    assert result["handoff"]["action"] == "route_agent"
-    assert result["assistant_draft"] == "I'll route this to the JD Archiver."
+    assert result["assistant_draft"] == "On it."
+    assert "plan" not in result
+    assert "handoff" not in result
+    assert "target_agent_key" not in result

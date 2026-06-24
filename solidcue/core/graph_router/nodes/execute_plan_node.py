@@ -137,6 +137,7 @@ async def execute_plan_node(state: RouterState) -> dict[str, Any]:
         )
 
         captured_output = ""
+        captured_data: dict[str, Any] = {}
         step_status = "completed"
 
         try:
@@ -186,6 +187,9 @@ async def execute_plan_node(state: RouterState) -> dict[str, Any]:
                             response = normalize_text(final_update.get("final_response"))
                             if response:
                                 captured_output = response
+                            result_data = final_update.get("result_data")
+                            if isinstance(result_data, dict) and result_data:
+                                captured_data = result_data
 
         except Exception:
             logger.exception("execute_plan step %d (%s) failed", step_index, agent_key)
@@ -196,6 +200,7 @@ async def execute_plan_node(state: RouterState) -> dict[str, Any]:
             "agent_key": agent_key,
             "sub_task": sub_task,
             "output": captured_output,
+            "data": captured_data,
             "status": step_status,
         })
 
@@ -212,13 +217,21 @@ async def execute_plan_node(state: RouterState) -> dict[str, Any]:
         })
 
     # 3. Synthesise a unified response from all step outputs.
+    #
+    # Include results retained from earlier turns (operator.add keeps them in state)
+    # alongside this turn's fresh results, so a request that extends a prior answer
+    # (e.g. "also add Paris") can be composed from the full set without re-fetching the
+    # earlier subjects. The append-only channel still stores only this turn's results.
+    prior_results = list(state.get("agent_results") or [])
+    combined_results = prior_results + agent_results
+
     synthesis = ""
     provider = _PROFILE_ROUTER_PROVIDER
 
     if provider is not None:
         synth_messages = build_router_synthesis_messages(
             user_input=user_input,
-            agent_results=agent_results,
+            agent_results=combined_results,
             chat_history=state.get("chat_history"),
         )
         synth_chunks: list[str] = []
