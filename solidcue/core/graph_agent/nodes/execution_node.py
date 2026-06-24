@@ -115,9 +115,37 @@ def _write_handoff(state: AgentState, execution_result: dict[str, Any]) -> dict[
     item_key = _get_item_key_from_task(task)
     if item_key:
         handoff[f"{requires_key}::{item_key}"] = content
+        # Record this item's identity so multi-item synthesis can label it.
+        # The label comes from the generic per-item source identity, never a
+        # domain-specific field.
+        label = _resolve_item_label(state, item_key)
+        if label:
+            handoff[f"item_label::{item_key}"] = label
     else:
         handoff[f"global::{requires_key}"] = content
     return handoff
+
+
+def _resolve_item_label(state: AgentState, item_key: str) -> str | None:
+    """Resolve a human-facing label for an item_key from target_artifacts_source.
+
+    Uses the generic per-item identity (`label` or `source_ref`); returns None
+    when no structured source is registered for the item (e.g. free-text inputs
+    not captured in target_artifacts_source), in which case synthesis falls back
+    to the slot key.
+    """
+    sources = state.get("target_artifacts_source")
+    if not isinstance(sources, list):
+        return None
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("item_key") or "").strip() != item_key:
+            continue
+        label = item.get("label") or item.get("source_ref")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+    return None
 
 
 _LARGE_PAYLOAD_FIELDS = {"content_base64", "content", "body", "text", "data"}

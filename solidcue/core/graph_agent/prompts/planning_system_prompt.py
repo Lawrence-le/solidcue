@@ -73,11 +73,19 @@ For every task, define these fields in order:
 ================================================================================
 
 ## 5.1 Atomic Tooling — One Tool Per Task
-- Each task uses EXACTLY ONE tool. Process requires "find file" + "download file"? Two tasks.
-- REQUIRED: `context.tool` (single string)
+- Each tool-using task uses EXACTLY ONE tool. Process requires "find file" + "download file"? Two tasks.
 - FORBIDDEN: `context.tool_sequence`, `context.tools` (list), comma-separated names
 - ✗ WRONG: `"context": {"tool_sequence": ["list_files", "download_file"]}`
 - ✓ CORRECT: `"context": {"tool": "list_files"}` then a second task `"context": {"tool": "download_file"}`
+
+## 5.1a Tool References — Only Real Tools, and Only Where Needed
+- `context.tool` MUST be one of the exact keys in **Available Tools** (Runtime Context).
+  NEVER invent a tool name. If no available tool fits a step, it is a synthesis task.
+- `source_gathering` and `artifact_generation` tasks REQUIRE `context.tool`.
+- `synthesis` tasks MUST NOT include `context.tool` — synthesis composes the
+  answer with the model, it does not call a tool.
+- ✗ WRONG: `"type": "synthesis", "context": {"tool": "synthesize_analysis"}` (invented tool on a synthesis task)
+- ✓ CORRECT: `"type": "synthesis", "context": {"scope": "all"}`
 
 ## 5.2 Tool-Requires Alignment — Output Must Match Tool
 - Each task's `requires` MUST describe what THIS task's tool produces (not what it consumes from upstream).
@@ -99,6 +107,10 @@ For every task, define these fields in order:
 - Do NOT combine unrelated outputs into one synthesis task.
 - Split synthesis only when each split has an independently verifiable output state.
 - Do NOT create process-only synthesis like "analyze", "brainstorm", or "refine" without concrete output.
+- AGGREGATE OUTPUT: when the single deliverable combines MULTIPLE source items
+  (e.g. one comparison table, ranking, or summary across several items), use ONE
+  synthesis task and set `context.scope: "all"` so it reads every item. Do NOT
+  split it per item, and do NOT pin it to a single `item_key`.
 
 ## 5.6 Multi-Item Source Binding
 - Each task that operates on a source item must include `context.item_key`.
@@ -136,7 +148,7 @@ Before submitting the plan, verify:
 
 1. **Completion check**: Does the last task fully complete the user's request?
    - If user requires a file but your last task is synthesis, you're missing an artifact_generation task.
-2. **Atomic check**: Does every task have exactly ONE tool in `context.tool`?
+2. **Atomic check**: Does every source_gathering/artifact_generation task have exactly ONE tool in `context.tool`, drawn from Available Tools? Do synthesis tasks have NO `context.tool`?
 3. **Output check**: Does every `requires` describe what THAT task's tool produces?
 4. **Delegation check**: Are any column/field/format specs duplicated from Skill Guidance? If yes, remove them from context.
 5. **Format check**: Are all `requires` in `snake_case` Noun+Past Participle? No imperatives.
@@ -149,6 +161,8 @@ Before submitting the plan, verify:
 - `"tool_sequence": [...]` — split into multiple tasks
 - `"tools": [...]` — split into multiple tasks
 - `"tool": "tool1, tool2"` — split into multiple tasks
+- `"tool": "<any name not in Available Tools>"` — never invent tools; if none fit, it is a synthesis task
+- `context.tool` on a `synthesis` task — synthesis uses no tool
 - `"columns": [...]` duplicated from SKILL.md — remove duplicated spec
 - `"url": "https://..."` in context — URLs come from `target_artifacts_source` at runtime, never bake them in
 - Any value lifted from the user's request — a named entity, URL, path, date, identifier, or count — appearing in a `description`, `requires`, or `context`. Refer to it by its role instead (e.g. "the requested item"), so the cached plan stays valid on the next request

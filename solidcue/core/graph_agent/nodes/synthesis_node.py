@@ -144,28 +144,111 @@ def _handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str
 # Section: source material builders
 # ---------------------------------------------------------------------------
 
+# Prefix under which per-item identity labels are stored in the handoff.
+_ITEM_LABEL_KEY = "item_label"
+
+
+def _stringify_handoff_value(value: Any) -> str:
+    """Render a handoff value as source text.
+
+    Prefers a text-shaped field (`text`/`content`/`body`); otherwise serializes
+    the whole value so structured (non-text) payloads are surfaced instead of
+    dropped. Branches on value SHAPE only — no domain-specific field names.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        text = value.get("text") or value.get("content") or value.get("body")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+    if isinstance(value, list):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+    return ""
+
+
+def _is_aggregate_task(task: dict[str, Any] | None) -> bool:
+    """Whether this synthesis task aggregates across all items.
+
+    Decided upstream by the planner via a neutral `context.scope` flag; core
+    never inspects the user request to guess.
+    """
+    if not isinstance(task, dict):
+        return False
+    context = task.get("context")
+    scope = context.get("scope") if isinstance(context, dict) else None
+    return isinstance(scope, str) and scope.strip().casefold() in {"all", "aggregate"}
+
+
+def _build_aggregate_source(handoff: dict[str, Any]) -> str:
+    """Render every item's handoff entries, grouped and labeled per item.
+
+    Generic: iterates item_key slots, uses the stored `item_label` (if any) as
+    the heading, falling back to the slot key. No domain knowledge.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    labels: dict[str, str] = {}
+    shared: dict[str, Any] = {}
+
+    for key, value in handoff.items():
+        if not isinstance(key, str) or "::" not in key:
+            continue
+        left, _, right = key.partition("::")
+        if left == "global":
+            shared[right] = value
+        elif left == _ITEM_LABEL_KEY:
+            labels[right] = value if isinstance(value, str) else str(value)
+        else:
+            groups.setdefault(right, {})[left] = value
+
+    sections: list[str] = []
+    for item_key in sorted(groups):
+        label = labels.get(item_key) or item_key
+        lines: list[str] = []
+        for base, value in groups[item_key].items():
+            block = _stringify_handoff_value(value)
+            if block:
+                lines.append(f"{base}: {block}")
+        if lines:
+            sections.append(f"=== {label} ===\n" + "\n".join(lines))
+
+    for base, value in shared.items():
+        block = _stringify_handoff_value(value)
+        if block:
+            sections.append(f"=== {base} (shared) ===\n{block}")
+
+    return "\n\n".join(sections)
+
+
 def _build_source_from_handoff(state: AgentState) -> str:
     """Extract readable source content from the handoff.
 
-    Returns text entries keyed by their requires label so the LLM
-    knows which source each block came from.
+    Aggregate synthesis tasks read every item (labeled per item); otherwise the
+    view is scoped to the task's single item_key. Structured values are
+    serialized, not dropped.
     """
     handoff = state.get("handoff")
     if not isinstance(handoff, dict) or not handoff:
         return ""
 
     task = _get_current_task(state)
+    if _is_aggregate_task(task):
+        return _build_aggregate_source(handoff)
+
     item_key = _get_item_key_from_task(task)
     handoff_view = _handoff_for_item(handoff, item_key)
 
     sections: list[str] = []
     for key, value in handoff_view.items():
-        if isinstance(value, str) and value.strip():
-            sections.append(f"=== {key} ===\n{value}")
-        elif isinstance(value, dict):
-            text = value.get("text") or value.get("content") or value.get("body")
-            if isinstance(text, str) and text.strip():
-                sections.append(f"=== {key} ===\n{text}")
+        block = _stringify_handoff_value(value)
+        if block:
+            sections.append(f"=== {key} ===\n{block}")
     return "\n\n".join(sections)
 
 

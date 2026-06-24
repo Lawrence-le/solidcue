@@ -42,6 +42,7 @@ def build_planning_messages(
     user_input: str,
     skill_guidance: str = "",
     tools_guidance: str = "",
+    available_tools: list[str] | None = None,
     source_paths: list[str] | None = None,
     output_paths: list[str] | None = None,
     source_filenames: list[str] | None = None,
@@ -60,6 +61,7 @@ def build_planning_messages(
     output_paths_str = _fmt_list(output_paths)
     source_filenames_str = _fmt_list(source_filenames)
     output_filenames_str = _fmt_list(output_filenames)
+    available_tools_str = _fmt_list(available_tools)
 
     # 2. Build static system prompt + dynamic runtime context
     system_prompt = build_planning_system_prompt()
@@ -71,6 +73,8 @@ def build_planning_messages(
 {compact_skill}
 
 - **Tooling Constraints:** {compact_tools}
+- **Available Tools (authoritative — use ONLY these exact tool keys; never invent a tool):**
+{available_tools_str}
 - **Preferred Source Paths:**
 {source_paths_str}
 - **Preferred Output Paths:**
