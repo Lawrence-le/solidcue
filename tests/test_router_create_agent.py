@@ -54,7 +54,8 @@ _READY_JSON = (
     '"plan":[],"handoff":{},"target_artifacts_source":[],'
     '"agent_ready":true,'
     '"agent_spec":{"name":"Weather Assistant","agent_key":"weather_assistant",'
-    '"description":"Provides current weather and forecasts","selected_tools":[]}}'
+    '"description":"Provides current weather and forecasts","selected_tools":[],'
+    '"produces_artifacts":false,"key_tasks":["report current conditions and forecast"]}}'
 )
 
 
@@ -131,8 +132,9 @@ async def test_router_create_agent_answers_conversationally(monkeypatch):
         config={"configurable": {"thread_id": "r-ca-1"}},
     )
 
-    # The router replies and finishes the turn — no form interrupt, no dead-end.
+    # The router surfaces the model's own conversational reply (not a fixed
+    # template) so the create-agent chat can actually progress.
     assert "__interrupt__" not in result
     assert result["router_intent"] == "create_agent"
-    assert "help with that" in result["final_response"].lower()
+    assert "what should it do" in result["final_response"].lower()
     assert not result.get("created_agent_key")

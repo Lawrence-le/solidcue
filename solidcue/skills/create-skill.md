@@ -37,6 +37,10 @@ Every generated agent skill file must contain these sections in order:
 - Do not invent unsupported capabilities.
 - Keep wording specific to the target agent, but preserve the structure.
 - If a section is not relevant, state `Not specified` rather than omitting it.
+- The `Workflow` must cover the spec's `key_tasks`.
+- If the spec's `produces_artifacts` is true, the `Workflow` must end by saving the
+  output to `artifact_destination` **verbatim** — the exact path and/or filename the
+  human provided — and `Output Contract` must name that same destination.
 
 ## Workflow
 
@@ -51,6 +55,8 @@ Every generated agent skill file must contain these sections in order:
 - agent name
 - agent key
 - role or purpose
+- key tasks
+- artifact output decision and destination (path/filename), when applicable
 - source materials
 - task scope
 - tool usage constraints

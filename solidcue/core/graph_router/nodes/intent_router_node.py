@@ -139,18 +139,35 @@ async def intent_router_node(
     if router_intent == "create_agent":
         raw_spec = parsed.get("agent_spec")
         agent_ready = bool(parsed.get("agent_ready")) and isinstance(raw_spec, dict)
-        result["assistant_draft"] = _build_create_agent_reply(agent_ready=agent_ready)
+        # Prefer the model's own reply so the create-agent chat can progress —
+        # acknowledge what was given, ask only what's still missing, and draft the
+        # spec for review. The static prompt is a fallback for an empty reply, not
+        # a fixed response on every turn (which made the chat repeat itself).
+        llm_reply = normalize_text(parsed.get("assistant_draft"))
+        result["assistant_draft"] = llm_reply or _build_create_agent_reply(
+            agent_ready=agent_ready
+        )
         result["final_response"] = result["assistant_draft"]
         if agent_ready:
             name = normalize_text(raw_spec.get("name"))
             agent_key = normalize_text(raw_spec.get("agent_key"))
             description = normalize_text(raw_spec.get("description"))
             if name and agent_key and description:
-                result["agent_spec"] = {
+                spec = {
                     "name": name,
                     "agent_key": agent_key,
                     "description": description,
                 }
+                # Carry through any other contract fields the router gathered
+                # (tools, planning, artifact behavior, key tasks, …) instead of
+                # dropping them — collect_spec then only asks for what's missing.
+                from solidcue.services.agent_service import CreateAgentInput
+
+                allowed = set(CreateAgentInput.model_fields)
+                for key, value in raw_spec.items():
+                    if key in allowed and key not in spec and value is not None:
+                        spec[key] = value
+                result["agent_spec"] = spec
                 result["system_intent"] = "create_agent"
 
     return result

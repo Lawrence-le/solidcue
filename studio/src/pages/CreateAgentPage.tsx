@@ -29,6 +29,9 @@ export function CreateAgentPage() {
 
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
+  const [keyTasks, setKeyTasks] = useState("")
+  const [producesArtifacts, setProducesArtifacts] = useState(false)
+  const [artifactDestination, setArtifactDestination] = useState("")
   const [identityTouched, setIdentityTouched] = useState(false)
   const [identitySubmitError, setIdentitySubmitError] = useState("")
   const [brain, setBrain] = useState<RoleFormData>(emptyRole("0.3"))
@@ -109,6 +112,14 @@ export function CreateAgentPage() {
               writer_temperature: Number(resolvedWriter.temperature),
             }),
         selected_tools: selectedTools,
+        key_tasks: keyTasks
+          .split("\n")
+          .map((t) => t.trim())
+          .filter(Boolean),
+        produces_artifacts: producesArtifacts,
+        ...(producesArtifacts && artifactDestination.trim()
+          ? { artifact_destination: artifactDestination.trim() }
+          : {}),
       }
       return api.createAgent(payload)
     },
@@ -228,6 +239,46 @@ export function CreateAgentPage() {
                 rows={3}
               />
             </div>
+            <div className="space-y-1.5">
+              <Label>Key tasks</Label>
+              <Textarea
+                value={keyTasks}
+                onChange={(e) => setKeyTasks(e.target.value)}
+                placeholder={"One task per line, e.g.\nScrape the job posting\nSave a formatted summary"}
+                rows={3}
+              />
+              <p className="text-xs text-muted-foreground">
+                The agent&apos;s main tasks — one per line. Grounds the generated SKILL.md.
+              </p>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label htmlFor="produces-artifacts">Produces saved artifacts</Label>
+                <p className="text-xs text-muted-foreground">
+                  Does this agent output files or documents it saves somewhere?
+                </p>
+              </div>
+              <Switch
+                id="produces-artifacts"
+                checked={producesArtifacts}
+                onCheckedChange={setProducesArtifacts}
+              />
+            </div>
+            {producesArtifacts && (
+              <div className="space-y-1.5">
+                <Label>Artifact destination</Label>
+                <Input
+                  value={artifactDestination}
+                  onChange={(e) => setArtifactDestination(e.target.value)}
+                  placeholder="e.g. drive://Recruiting/JDs/{date}-jd.docx"
+                  className="font-mono"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Exact path and/or filename where outputs are saved. Written verbatim into
+                  SKILL.md and TOOLS.md.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -399,6 +450,16 @@ export function CreateAgentPage() {
               <ReviewRow label="Reviewer" value={formatRoleReview(resolvedReviewer, reviewerInherits)} />
               <ReviewRow label="Writer" value={formatRoleReview(resolvedWriter, writerInherits)} />
               <ReviewRow label="Tools" value={selectedTools.length ? selectedTools.join(", ") : "none"} />
+              <ReviewRow
+                label="Tasks"
+                value={
+                  keyTasks.split("\n").map((t) => t.trim()).filter(Boolean).join(", ") || "none"
+                }
+              />
+              <ReviewRow
+                label="Artifacts"
+                value={producesArtifacts ? artifactDestination.trim() || "yes (no destination)" : "no"}
+              />
             </div>
           </div>
         )}

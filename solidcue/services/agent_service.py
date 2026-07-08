@@ -3,9 +3,9 @@
 Execution (run, stream, resume) lives in ``solidcue.services.run_engine``.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from solidcue.agent_configs.loader import (
     save_agent,
@@ -43,6 +43,22 @@ class CreateAgentInput(BaseModel):
     writer_temperature: float | None = None
     selected_tools: list[str]
     planning_mode: Literal["static", "dynamic"] = "dynamic"
+
+    # Remaining AgentConfig fields — optional so CLI/REST callers keep working,
+    # but now part of the contract so collect_spec can gather them and the YAML
+    # stops defaulting them silently.
+    allowed_tasks: list[str] = Field(default_factory=list)
+    style: dict[str, Any] = Field(default_factory=dict)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    validation_policy: str | None = None
+
+    # Definition (.md) substance — fields the writer needs but the YAML has no
+    # home for. Gathered from the human, passed to graph_definition so PERSONA/
+    # SKILL/TOOLS are grounded in real intent instead of improvised.
+    produces_artifacts: bool | None = None
+    artifact_destination: str | None = None
+    key_tasks: list[str] = Field(default_factory=list)
+    examples: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _build_provider_config(
@@ -119,6 +135,10 @@ def _build_agent_config_and_env(input_data: "CreateAgentInput") -> tuple[AgentCo
         writer_provider=writer_provider,
         tools=input_data.selected_tools,
         planning=PlanningPolicy(mode=input_data.planning_mode),
+        allowed_tasks=input_data.allowed_tasks,
+        style=input_data.style,
+        constraints=input_data.constraints,
+        validation_policy=input_data.validation_policy,
     )
     return config, brain_env_key, lite_env_key, reviewer_env_key, writer_env_key
 
