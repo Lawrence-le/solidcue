@@ -16,6 +16,7 @@ from solidcue.services.lg_client import (
     get_lg_latest_thread_id,
     get_lg_thread_by_conversation,
     get_lg_thread_interrupt,
+    get_lg_thread_next_nodes,
     get_lg_thread_state,
     get_lg_thread_status,
 )
@@ -247,9 +248,13 @@ async def is_conversation_resumable(conversation_id: str) -> dict[str, Any]:
         return {"resumable": False, "next_nodes": [], "thread_id": None}
     lg_thread_id = lg_thread.get("thread_id", "")
     thread_status = await get_lg_thread_status(lg_thread_id)
-    resumable = thread_status in ("interrupted", "busy")
+    # An interrupted/busy thread is resumable; so is an idle thread that was
+    # cancelled mid-run — the checkpoint still has pending next nodes to
+    # continue from.
+    next_nodes = await get_lg_thread_next_nodes(lg_thread_id)
+    resumable = thread_status in ("interrupted", "busy") or bool(next_nodes)
     return {
         "resumable": resumable,
-        "next_nodes": [],
+        "next_nodes": next_nodes,
         "thread_id": lg_thread_id,
     }

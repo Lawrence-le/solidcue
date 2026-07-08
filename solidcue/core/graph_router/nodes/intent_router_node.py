@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from langgraph.runtime import Runtime
 
@@ -16,6 +17,13 @@ from solidcue.core.graph_router.prompts.router_prompt import (
 from solidcue.core.graph_router.state.schema import RouterState
 from solidcue.core.utils.generation import (
     generate_full_then_parse,
+)
+
+
+_JSON_ONLY_REMINDER = (
+    "Your previous reply was not valid JSON. Reply again with ONLY a single JSON object "
+    "matching the required shape. Keep assistant_draft to one short sentence with no "
+    "tables or line breaks; escape any newline as \\n."
 )
 
 
@@ -86,20 +94,33 @@ async def intent_router_node(
         agent_results=state.get("agent_results"),
     )
 
-    try:
-        # Blocking sync HTTP call — run in a worker thread so it never freezes the loop.
-        parsed, _routing_metric, _routing_output = await asyncio.to_thread(
-            generate_full_then_parse,
-            provider,
-            messages,
-            extract_json_object,
-            node_name="intent_router",
-        )
-    except Exception:
-        return _clarify("I couldn't generate a router response.", reason="Router model generation failed.")
+    # Small router models occasionally return prose or malformed JSON (e.g. a real
+    # newline inside a string). Retry once with a strict reminder before giving up, so a
+    # single bad generation doesn't dead-end the turn.
+    parsed: Any = None
+    attempts = [messages, messages + [{"role": "user", "content": _JSON_ONLY_REMINDER}]]
+    for attempt_messages in attempts:
+        try:
+            # Blocking sync HTTP call — run in a worker thread so it never freezes the loop.
+            parsed, _routing_metric, _routing_output = await asyncio.to_thread(
+                generate_full_then_parse,
+                provider,
+                attempt_messages,
+                extract_json_object,
+                node_name="intent_router",
+            )
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            break
 
     if not isinstance(parsed, dict):
-        return _clarify("I couldn't generate a router response.", reason="Router model did not return valid JSON.")
+        # Still no parseable response — degrade to a friendly rephrase prompt rather
+        # than an internal-error message, so the user has a clear next step.
+        return _clarify(
+            "Sorry, I didn't quite catch that — could you rephrase your request?",
+            reason="Router model did not return valid JSON after retry.",
+        )
 
     assistant_draft = normalize_text(parsed.get("assistant_draft")) or "I can help with that."
     router_intent = normalize_text(parsed.get("router_intent")) or normalize_text(parsed.get("intent"))

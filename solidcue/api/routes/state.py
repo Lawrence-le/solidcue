@@ -11,6 +11,7 @@ from solidcue.api.schemas import (
 )
 from solidcue.services.lg_client import (
     get_lg_client,
+    get_lg_latest_run_id,
     get_lg_thread_by_conversation,
     get_lg_thread_status,
 )
@@ -198,13 +199,21 @@ async def conversation_run_status(conversation_id: str) -> RunStatusResponse:
     lg_thread = await get_lg_thread_by_conversation(conversation_id)
     if lg_thread:
         lg_thread_id = lg_thread.get("thread_id", "")
-        status = await get_lg_thread_status(lg_thread_id)
+        thread_status = await get_lg_thread_status(lg_thread_id)
+        # LangGraph reports an in-flight run as "busy"; the client protocol
+        # calls that "running".
+        is_active = thread_status == "busy"
+        status = "running" if is_active else thread_status
+        # Surface the in-flight run so a refreshed client can rejoin it
+        # instead of starting a second run.
+        run_id = await get_lg_latest_run_id(lg_thread_id) if is_active else None
     else:
         lg_thread_id = None
         status = "idle"
+        run_id = None
     return RunStatusResponse(
         thread_id=lg_thread_id or conversation_id,
-        run_id=None,
+        run_id=run_id,
         agent_key=None,
         status=status,
         error=None,

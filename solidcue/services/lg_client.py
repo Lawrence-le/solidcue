@@ -47,6 +47,22 @@ async def get_lg_thread_state(lg_thread_id: str) -> dict[str, Any]:
         return {}
 
 
+async def get_lg_thread_next_nodes(lg_thread_id: str) -> list[str]:
+    """Return the thread's pending next nodes from the latest checkpoint.
+
+    Non-empty means the graph stopped mid-execution (cancelled or interrupted)
+    with work still queued, so it can be resumed from the checkpoint by running
+    it again with empty input.
+    """
+    try:
+        client = get_lg_client()
+        snapshot = await client.threads.get_state(lg_thread_id)
+    except Exception:
+        return []
+    nxt = snapshot.get("next") if isinstance(snapshot, dict) else getattr(snapshot, "next", None)
+    return [str(n) for n in nxt] if nxt else []
+
+
 async def get_lg_thread_status(lg_thread_id: str) -> str:
     """Return the thread status: idle | busy | interrupted | error."""
     try:
@@ -57,6 +73,35 @@ async def get_lg_thread_status(lg_thread_id: str) -> str:
         return str(getattr(thread, "status", "idle"))
     except Exception:
         return "idle"
+
+
+async def get_lg_latest_run_id(lg_thread_id: str) -> str | None:
+    """Return the id of the thread's active run, or None.
+
+    Used by the run-status endpoint so a refreshed client can rejoin the
+    in-flight run instead of starting a new one. Prefers a run that is still
+    executing (pending/running) over a newer-but-finished one so we never
+    attach to a stale completed run from an earlier turn.
+    """
+    try:
+        client = get_lg_client()
+        runs = await client.runs.list(lg_thread_id, limit=10)
+    except Exception:
+        return None
+
+    def _field(run: Any, key: str) -> Any:
+        return run.get(key) if isinstance(run, dict) else getattr(run, key, None)
+
+    newest_run_id: str | None = None
+    for run in runs or []:
+        run_id = _field(run, "run_id")
+        if not run_id:
+            continue
+        if newest_run_id is None:
+            newest_run_id = str(run_id)
+        if _field(run, "status") in ("pending", "running"):
+            return str(run_id)
+    return newest_run_id
 
 
 async def delete_lg_thread(lg_thread_id: str) -> bool:

@@ -35,15 +35,33 @@ def _has_reusable_data(agent_results: list[dict[str, Any]] | None) -> bool:
     )
 
 
+def _has_reusable_history(chat_history: list[dict[str, Any]] | None) -> bool:
+    """True when a prior turn already produced content we can re-render.
+
+    Data answered directly by the `chat` intent never lands in ``agent_results``
+    (no agent ran); it lives only in CHAT_HISTORY. A reshape of that content is
+    still valid, so we treat any prior assistant message as a reusable source.
+    """
+    if not isinstance(chat_history, list):
+        return False
+    return any(
+        isinstance(m, dict)
+        and str(m.get("role") or "").strip() == "assistant"
+        and str(m.get("content") or "").strip()
+        for m in chat_history
+    )
+
+
 async def reshape_node(state: RouterState) -> dict[str, Any]:
     writer = get_stream_writer()
     user_input = normalize_text(state.get("user_input"))
     agent_results: list[dict[str, Any]] = list(state.get("agent_results") or [])
+    chat_history = state.get("chat_history")
 
-    # Without retained structured data there is nothing to reshape from. Fall back to
-    # an honest message rather than fabricating — the classifier should route genuine
-    # "needs fresh data" follow-ups to `task` instead.
-    if not _has_reusable_data(agent_results):
+    # Reshape can re-render structured agent data OR content a prior `chat` turn
+    # already produced (which lives only in CHAT_HISTORY, never in agent_results).
+    # Only bail when there is neither — an honest message rather than fabricating.
+    if not _has_reusable_data(agent_results) and not _has_reusable_history(chat_history):
         message = (
             "I don't have the earlier results saved to reshape. "
             "Ask me to fetch the data again and I'll get fresh values."
@@ -58,7 +76,7 @@ async def reshape_node(state: RouterState) -> dict[str, Any]:
         messages = build_router_reshape_messages(
             user_input=user_input,
             agent_results=agent_results,
-            chat_history=state.get("chat_history"),
+            chat_history=chat_history,
         )
         chunks: list[str] = []
         try:
@@ -79,6 +97,16 @@ async def reshape_node(state: RouterState) -> dict[str, Any]:
             if output:
                 synthesis = output
                 break
+        if not synthesis and isinstance(chat_history, list):
+            for message in reversed(chat_history):
+                if not isinstance(message, dict):
+                    continue
+                if str(message.get("role") or "").strip() != "assistant":
+                    continue
+                content = normalize_text(message.get("content"))
+                if content:
+                    synthesis = content
+                    break
         synthesis = synthesis or normalize_text(state.get("assistant_draft")) or "Done."
         writer({"event": "message_delta", "data": {"delta": synthesis}})
 

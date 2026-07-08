@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Circle,
   Loader2,
+  Play,
   Send,
   Settings2,
   Square,
@@ -17,8 +18,10 @@ import { api, ApiError } from "@/lib/api"
 import {
   lgCancelRun,
   lgCreateThread,
+  loadRunMapping,
   loadThreadMapping,
   persistThreadMapping,
+  resumeLangGraph,
   streamLangGraph,
 } from "@/lib/lgClient";
 import type {
@@ -442,6 +445,7 @@ export function SessionsPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [nodeEvents, setNodeEvents] = useState<NodeEvent[]>([]);
   const [runState, setRunState] = useState<RunState>("idle");
+  const [canResume, setCanResume] = useState(false);
   const [userInput, setUserInput] = useState("");
   const [loadingSession, setLoadingSession] = useState(false);
   const [workedSeconds, setWorkedSeconds] = useState<number | null>(null);
@@ -701,13 +705,21 @@ export function SessionsPage() {
   ]);
 
   useEffect(() => {
-    if (!conversationId || runState !== "streaming" || abortRef.current) return;
+    // Watchdog: while the UI shows a run as streaming, poll real run status —
+    // even when a joinStream is attached (abortRef set). joinStream can go
+    // silent (e.g. resumable-replay not delivering buffered events in local
+    // dev, or the run already finished), which would otherwise hang the UI in
+    // a streaming state forever. We only ACT when the server says the run is no
+    // longer running, so this never disturbs an actively-delivering stream.
+    if (!conversationId || runState !== "streaming") return;
 
     const interval = window.setInterval(async () => {
       try {
         const status = await api.conversationRunStatus(conversationId);
         const mapped = mapRemoteRunStatus(status.status);
         if (mapped !== "streaming") {
+          abortRef.current?.abort();
+          abortRef.current = null;
           await loadConversationSnapshot(conversationId);
         }
       } catch {
@@ -856,7 +868,9 @@ export function SessionsPage() {
         const id = msgId();
         subagentMsgIdRef.current = id;
         setMessages((prev) => [
-          ...prev,
+          // Drop any prior sub-agent panel (e.g. a stopped run's panel when
+          // resuming/refreshing re-emits the plan) so only one panel shows.
+          ...prev.filter((m) => m.role !== "subagent"),
           {
             role: "subagent",
             id,
@@ -969,6 +983,81 @@ export function SessionsPage() {
     ],
   );
 
+  // Refresh / reconnect: a snapshot restored a still-running run (runState
+  // "streaming" with a run_id) but no live stream is attached yet. Resume it —
+  // see the resumeLangGraph call below for why we resume rather than re-attach.
+  const rejoinedRunRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (runState !== "streaming") {
+      rejoinedRunRef.current = null;
+      return;
+    }
+    if (!runId || !threadId || abortRef.current) return;
+    if (rejoinedRunRef.current === runId) return;
+
+    rejoinedRunRef.current = runId;
+    lgThreadIdRef.current = threadId;
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    // Don't re-attach to the in-flight run: joinStream doesn't replay buffered
+    // history in local dev, so it sits silent. Instead do exactly what the
+    // Resume button does — interrupt the running run and stream a fresh
+    // continuation from the last checkpoint, which re-emits plan/subagent
+    // events so the panel and node rail rebuild.
+    resumeLangGraph(threadId, handleEvent, ctrl.signal)
+      .catch(() => {
+        // Resume failed (e.g. the run finished and is gone) — reconcile below.
+      })
+      .finally(async () => {
+        if (abortRef.current === ctrl) abortRef.current = null;
+        if (ctrl.signal.aborted) return;
+        // The joined stream can end without delivering a terminal event when
+        // the run finished at or before we attached — handleEvent then never
+        // fires "completed", so runState would stay "streaming" and the UI
+        // would hang mid-run. Reconcile against real status and pull the final
+        // snapshot if the run is no longer active.
+        try {
+          const status = await api.conversationRunStatus(conversationId);
+          if (mapRemoteRunStatus(status.status) !== "streaming") {
+            await loadConversationSnapshot(conversationId);
+          }
+        } catch {
+          // Last resort: don't leave the UI stuck mid-run.
+          setRunState("completed");
+          finalizeWorkedTimer();
+        }
+      });
+  }, [
+    runState,
+    runId,
+    threadId,
+    handleEvent,
+    conversationId,
+    loadConversationSnapshot,
+    finalizeWorkedTimer,
+  ]);
+
+  // After a stop/cancel, check whether the checkpoint has pending work so the
+  // Resume button only shows when the graph can actually continue.
+  useEffect(() => {
+    if (runState !== "cancelled" || !conversationId) {
+      setCanResume(false);
+      return;
+    }
+    let active = true;
+    api
+      .conversationResumable(conversationId)
+      .then((res) => {
+        if (active) setCanResume(res.resumable);
+      })
+      .catch(() => {
+        if (active) setCanResume(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [runState, conversationId]);
+
   async function startRun(
     input: string,
     conversationIdOverride?: string,
@@ -1060,20 +1149,75 @@ export function SessionsPage() {
     finalizeWorkedTimer();
     setRunState("cancelled");
     setNodeEvents((prev) => prev.map((ev) => ({ ...ev, status: "done" })));
+    // Reflect the stop in the sub-agent panel: any running/pending step is now
+    // interrupted, so its spinner stops and the panel reads as stopped.
+    const stoppedPanelId = subagentMsgIdRef.current;
+    if (stoppedPanelId) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === stoppedPanelId && m.role === "subagent"
+            ? {
+                ...m,
+                steps: m.steps.map((s) =>
+                  s.status === "running" || s.status === "pending"
+                    ? { ...s, status: "interrupted" as const }
+                    : s,
+                ),
+              }
+            : m,
+        ),
+      );
+    }
     const lgThreadId = lgThreadIdRef.current ?? (conversationId ? loadThreadMapping(conversationId) : null);
-    if (lgThreadId && runId) {
+    // runId state lags the run's creation (it's set from the start event), so
+    // fall back to the persisted mapping. Since runs are created with
+    // onDisconnect: "continue", the abort above won't stop the backend — this
+    // explicit cancel is the only thing that does.
+    const cancelRunId = runId ?? (lgThreadId ? loadRunMapping(lgThreadId) : null);
+    if (lgThreadId && cancelRunId) {
       try {
-        await lgCancelRun(lgThreadId, runId);
+        await lgCancelRun(lgThreadId, cancelRunId);
       } catch {
         /* best effort */
       }
     }
   }
 
+  async function handleResume() {
+    const lgThreadId =
+      lgThreadIdRef.current ??
+      (conversationId ? loadThreadMapping(conversationId) : null);
+    if (!lgThreadId) return;
+
+    // Confirm the checkpoint actually has pending work before resuming.
+    try {
+      const res = await api.conversationResumable(conversationId);
+      if (!res.resumable) return;
+    } catch {
+      // If the check fails, fall through and let the resume attempt surface
+      // any real error via handleEvent.
+    }
+
+    lgThreadIdRef.current = lgThreadId;
+    stopIntentionalRef.current = false;
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setRunState("streaming");
+    try {
+      await resumeLangGraph(lgThreadId, handleEvent, ctrl.signal);
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        setRunState("error");
+        finalizeWorkedTimer();
+      }
+    } finally {
+      if (abortRef.current === ctrl) abortRef.current = null;
+    }
+  }
+
   const streaming = runState === "streaming";
   const taskRunning = streaming;
-  const streamingEmptyStateLabel =
-    streaming && nodeEvents.length === 0 ? "Starting..." : null;
   const displayedWorkedSeconds =
       streaming
         ? liveWorkedSeconds
@@ -1217,17 +1361,6 @@ export function SessionsPage() {
                     </div>
                   )}
 
-                {streamingEmptyStateLabel && (
-                  <div className="px-1">
-                    <div className="flex items-center gap-1.5">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                      <span className="text-[11px] text-muted-foreground/75">
-                        {streamingEmptyStateLabel}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
                 <div ref={messagesEndRef} />
               </div>
             )}
@@ -1299,6 +1432,16 @@ export function SessionsPage() {
                     className="flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full bg-muted hover:text-destructive transition-colors"
                   >
                     <Square className="h-3.5 w-3.5 fill-current" />
+                  </button>
+                ) : canResume && !canSend ? (
+                  <button
+                    type="button"
+                    onClick={handleResume}
+                    title="Resume from where the task stopped"
+                    className="flex h-8.5 shrink-0 items-center justify-center gap-1.5 rounded-full bg-primary px-3 text-xs font-medium text-primary-foreground transition-all hover:opacity-90 active:scale-95"
+                  >
+                    <Play className="h-3.5 w-3.5 fill-current" />
+                    Resume
                   </button>
                 ) : (
                   <button

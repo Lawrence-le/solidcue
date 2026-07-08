@@ -60,6 +60,30 @@ async def test_reshape_resynthesizes_from_retained_data(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reshape_resynthesizes_from_chat_history_only(monkeypatch) -> None:
+    # Data produced by a `chat` turn never lands in agent_results; it lives only in
+    # CHAT_HISTORY. Reshape must still re-render it instead of dead-ending.
+    _silence_stream_writer(monkeypatch)
+    monkeypatch.setattr(
+        reshape_module, "_PROFILE_ROUTER_PROVIDER", _StreamProvider(["| Building | Height |", "\n| Lakhta Center | 462m |"])
+    )
+
+    result = await reshape_node(
+        {
+            "user_input": "show me in table format",
+            "agent_results": [],
+            "chat_history": [
+                {"role": "user", "content": "give me the top buildings in europe"},
+                {"role": "assistant", "content": "Lakhta Center (462m), Federation Tower (374m)..."},
+            ],
+        }
+    )
+
+    assert "Building" in result["final_response"]
+    assert "fetch the data again" not in result["final_response"]
+
+
+@pytest.mark.asyncio
 async def test_reshape_falls_back_when_no_retained_data(monkeypatch) -> None:
     _silence_stream_writer(monkeypatch)
     # Even with a provider available, missing structured data must not fabricate.

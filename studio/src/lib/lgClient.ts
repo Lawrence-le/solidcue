@@ -141,6 +141,20 @@ export function loadThreadMapping(conversationId: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Run mapping (lgThreadId → latest runId)
+// ---------------------------------------------------------------------------
+
+const RUN_KEY = "lg_run:"  // lg_run:<lgThreadId> → runId
+
+export function persistRunMapping(lgThreadId: string, runId: string): void {
+  sessionStorage.setItem(RUN_KEY + lgThreadId, runId)
+}
+
+export function loadRunMapping(lgThreadId: string): string | null {
+  return sessionStorage.getItem(RUN_KEY + lgThreadId)
+}
+
+// ---------------------------------------------------------------------------
 // Event mapping: LangGraph chunk → StreamEvent
 // ---------------------------------------------------------------------------
 
@@ -218,6 +232,28 @@ function extractMessageDelta(data: unknown): string {
 // Public streaming API
 // ---------------------------------------------------------------------------
 
+// Drain a LangGraph event stream, mapping each chunk and forwarding it.
+// Shared by the new-send path and the reconnect/join path.
+async function pumpStream(
+  stream: AsyncIterable<unknown>,
+  lgThreadId: string,
+  onEvent: (e: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  for await (const chunk of stream) {
+    if (signal?.aborted) break
+    const mapped = mapChunk(chunk as LgChunk, lgThreadId)
+    if (mapped) {
+      onEvent(mapped)
+      if (mapped.event === "completed") break
+    }
+  }
+}
+
+// New user send: start a background run that keeps executing even if this
+// client disconnects (onDisconnect: "continue"), then stream its events.
+// The run_id is persisted so a refresh/reconnect can resume instead of
+// starting a second turn.
 export async function streamLangGraph(
   lgThreadId: string,
   userInput: string,
@@ -227,21 +263,68 @@ export async function streamLangGraph(
   const c = getClient()
   const assistantId = await getRouterAssistantId()
 
-  for await (const chunk of c.runs.stream(lgThreadId, assistantId, {
+  const run = await c.runs.create(lgThreadId, assistantId, {
     input: { user_input: userInput },
     streamMode: [...STREAM_MODES],
-    onDisconnect: "cancel",
+    onDisconnect: "continue",
+    streamResumable: true,
+  })
+  persistRunMapping(lgThreadId, run.run_id)
+
+  // joinStream doesn't reliably emit the server's `metadata` event up front, so
+  // synthesize the run-start signal here. This drives the UI's run-start
+  // side-effects (the "Thinking…" bubble, the worked timer, run/thread ids)
+  // that previously rode on the metadata→start mapping.
+  onEvent({
+    event: "start",
+    data: { thread_id: lgThreadId, run_id: run.run_id },
+  } as StreamEvent)
+
+  await pumpStream(
+    c.runs.joinStream(lgThreadId, run.run_id, { signal, streamMode: [...STREAM_MODES] }),
+    lgThreadId,
+    onEvent,
     signal,
-  })) {
-    if (signal?.aborted) break
-    const lgChunk = chunk as LgChunk
-    const mapped = mapChunk(lgChunk, lgThreadId)
-    if (mapped) {
-      if (mapped.event === "completed") {
-        onEvent(mapped)
-        break
-      }
-      onEvent(mapped)
-    }
-  }
+  )
+}
+
+// Resume: start a run with empty input so the graph continues from its last
+// checkpoint (the next pending nodes) instead of restarting the turn, and
+// stream that fresh run live. Used by both the Resume button (thread already
+// idle after a cancel) and refresh (thread still running). multitaskStrategy
+// "interrupt" makes the running case work: it interrupts any in-flight run —
+// keeping its completed checkpoint — and starts the continuation. It's a no-op
+// when the thread is already idle, so the Resume button is unaffected.
+export async function resumeLangGraph(
+  lgThreadId: string,
+  onEvent: (e: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const c = getClient()
+  const assistantId = await getRouterAssistantId()
+
+  const run = await c.runs.create(lgThreadId, assistantId, {
+    input: null,
+    streamMode: [...STREAM_MODES],
+    onDisconnect: "continue",
+    streamResumable: true,
+    multitaskStrategy: "interrupt",
+  })
+  persistRunMapping(lgThreadId, run.run_id)
+
+  // Surface the NEW run id (resume creates a fresh run that replaces the one the
+  // snapshot restored). Without this the UI's runId state stays pinned to the
+  // old run, so Stop would cancel a run that no longer exists (404) and leave
+  // the live one running. The synthetic start drives setRunId to the new id.
+  onEvent({
+    event: "start",
+    data: { thread_id: lgThreadId, run_id: run.run_id },
+  } as StreamEvent)
+
+  await pumpStream(
+    c.runs.joinStream(lgThreadId, run.run_id, { signal, streamMode: [...STREAM_MODES] }),
+    lgThreadId,
+    onEvent,
+    signal,
+  )
 }
