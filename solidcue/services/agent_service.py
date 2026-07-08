@@ -3,9 +3,10 @@
 Execution (run, stream, resume) lives in ``solidcue.services.run_engine``.
 """
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from solidcue.agent_configs.loader import (
     save_agent,
@@ -59,6 +60,29 @@ class CreateAgentInput(BaseModel):
     artifact_destination: str | None = None
     key_tasks: list[str] = Field(default_factory=list)
     examples: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("selected_tools", "key_tasks", "allowed_tasks", mode="before")
+    @classmethod
+    def _coerce_str_list(cls, value: Any) -> Any:
+        """Accept a string where a list is expected — LLM-driven callers (the
+        router) often emit "a, b, c" or a newline block instead of a JSON array.
+        Split it into a list rather than raising a ValidationError that aborts
+        agent creation."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            parts = re.split(r"[\n;,]", value)
+            return [p.strip() for p in parts if p.strip()]
+        return value
+
+    @field_validator("examples", mode="before")
+    @classmethod
+    def _coerce_examples(cls, value: Any) -> Any:
+        """Keep only well-formed dict examples; drop a stray string/None the model
+        might emit instead of failing the whole spec."""
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
 
 
 def _build_provider_config(

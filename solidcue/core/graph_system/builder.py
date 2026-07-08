@@ -47,6 +47,17 @@ def _route_after_collect_spec(state: SystemState) -> str:
     return "select_tools"
 
 
+def _route_after_write_config(state: SystemState) -> str:
+    # write_config sets created_config_path only on success (system_next can't be
+    # used — intent_node always pre-sets it to final_output, same reason
+    # _route_after_collect_spec keys off created_agent_key). On failure, skip
+    # verify so the real error surfaces instead of verify overwriting it with
+    # "created with issues" over a half-written agent (MD files but no YAML).
+    if not state.get("created_config_path"):
+        return "final_output"
+    return "verify"
+
+
 def _assemble_graph() -> StateGraph:
     """Build the system StateGraph (nodes + edges) without compiling."""
     graph = StateGraph(SystemState, output_schema=SystemSubgraphOutput)
@@ -73,7 +84,7 @@ def _assemble_graph() -> StateGraph:
     graph.add_edge("select_tools", "planning_mode")
     graph.add_edge("planning_mode", "generate_definitions")
     graph.add_edge("generate_definitions", "write_config")
-    graph.add_edge("write_config", "verify")
+    graph.add_conditional_edges("write_config", _route_after_write_config)
     graph.add_edge("verify",       "final_output")
     graph.add_edge("final_output", END)
 

@@ -208,6 +208,46 @@ def test_write_config_node_exception_routes_to_final_output(monkeypatch):
     assert "Failed to write agent config" in result["final_response"]
 
 
+def test_create_agent_input_coerces_string_list_fields():
+    """The router LLM often emits list fields as a plain string. Coerce rather
+    than raising a ValidationError that aborts agent creation."""
+    from solidcue.services.agent_service import CreateAgentInput
+
+    spec = dict(_VALID_SPEC)
+    spec["selected_tools"] = "search_web, drive_upload_file"
+    spec["key_tasks"] = "Search the web, extract facts, write summary"
+    spec["examples"] = "none"  # malformed → dropped, not fatal
+
+    parsed = CreateAgentInput(**spec)
+    assert parsed.selected_tools == ["search_web", "drive_upload_file"]
+    assert parsed.key_tasks == ["Search the web", "extract facts", "write summary"]
+    assert parsed.examples == []
+
+
+def test_write_config_node_survives_string_key_tasks(monkeypatch):
+    """A string key_tasks used to crash CreateAgentInput → no YAML written; now
+    it coerces and the config is built."""
+    from solidcue.core.graph_system.nodes.write_config_node import write_config_node
+
+    monkeypatch.setattr(wc_mod, "write_agent_config", lambda _: (_FAKE_CONFIG, "/tmp/test_agent.yaml"))
+    spec = dict(_VALID_SPEC)
+    spec["key_tasks"] = "one task, another task"
+
+    result = write_config_node({"agent_spec": spec})
+    assert result["created_agent_key"] == "test_agent"
+    assert result.get("system_next") != "final_output"
+
+
+def test_route_after_write_config_skips_verify_on_failure():
+    """A failed write_config must not fall through to verify (which would report
+    'created with issues' over a half-written agent)."""
+    from solidcue.core.graph_system.builder import _route_after_write_config
+
+    # No created_config_path (failure) → skip verify; present (success) → verify.
+    assert _route_after_write_config({"created_agent_key": "x"}) == "final_output"
+    assert _route_after_write_config({"created_config_path": "/tmp/x.yaml"}) == "verify"
+
+
 # ---------------------------------------------------------------------------
 # End-to-end graph_system create_agent run (mocked provider + file IO)
 # ---------------------------------------------------------------------------
