@@ -13,6 +13,8 @@ from solidcue.core.graph_system.state.schema import SystemState
 
 def verify_node(state: SystemState) -> dict[str, Any]:
     """Confirm the agent folder is complete: YAML loads and all three MD files exist."""
+    from solidcue.core.graph_system.nodes._progress import emit_step
+
     agent_key = str(state.get("created_agent_key") or "").strip()
     if not agent_key:
         msg = "Verification failed — no agent_key recorded."
@@ -21,6 +23,7 @@ def verify_node(state: SystemState) -> dict[str, Any]:
             "assistant_draft": msg,
         }
 
+    emit_step(agent_key, 3, "running")
     issues: list[str] = []
 
     try:
@@ -38,11 +41,13 @@ def verify_node(state: SystemState) -> dict[str, Any]:
 
     if issues:
         msg = f"Agent '{agent_key}' created with issues: {'; '.join(issues)}."
+        emit_step(agent_key, 3, "failed")
     else:
         msg = (
             f"Agent '{agent_key}' created successfully. "
             "YAML config and all three definition files are in place."
         )
+        emit_step(agent_key, 3, "completed")
 
     return {
         "final_response": msg,

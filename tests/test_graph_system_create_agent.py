@@ -238,6 +238,27 @@ def test_write_config_node_survives_string_key_tasks(monkeypatch):
     assert result.get("system_next") != "final_output"
 
 
+def test_progress_events_shape_and_noop(monkeypatch):
+    """Build-progress events match the reused frontend panel contract, and are a
+    safe no-op outside a streaming run."""
+    prog = importlib.import_module("solidcue.core.graph_system.nodes._progress")
+
+    # Outside a stream: get_stream_writer raises → must not crash.
+    prog.emit_plan("ig")
+    prog.emit_step("ig", 0, "running")
+
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(prog, "get_stream_writer", lambda: captured.append)
+    prog.emit_plan("ig")
+    prog.emit_step("ig", 2, "completed")
+
+    assert captured[0]["event"] == "plan"
+    assert captured[0]["data"]["step_count"] == len(prog.BUILD_STEPS)
+    assert captured[1]["event"] == "subagent"
+    assert captured[1]["data"]["status"] == "completed"
+    assert captured[1]["data"]["step_index"] == 2
+
+
 def test_route_after_write_config_skips_verify_on_failure():
     """A failed write_config must not fall through to verify (which would report
     'created with issues' over a half-written agent)."""

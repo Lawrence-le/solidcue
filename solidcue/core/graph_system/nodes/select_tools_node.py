@@ -69,7 +69,14 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 
 
 async def select_tools_node(state: SystemState) -> dict[str, Any]:
+    from solidcue.core.graph_system.nodes._progress import emit_plan, emit_step
+
     agent_spec = dict(state.get("agent_spec") or {})
+    agent_key = str(state.get("created_agent_key") or agent_spec.get("agent_key") or "")
+    # First build node — announce the whole plan, then mark this step running.
+    emit_plan(agent_key)
+    emit_step(agent_key, 0, "running")
+
     available = _available_tools()
     valid_keys = {t["tool_key"] for t in available}
 
@@ -82,11 +89,13 @@ async def select_tools_node(state: SystemState) -> dict[str, Any]:
     ]
     if existing:
         agent_spec["selected_tools"] = existing
+        emit_step(agent_key, 0, "completed")
         return {"agent_spec": agent_spec}
 
     provider = _get_workspace_provider()
     if not available or provider is None:
         agent_spec["selected_tools"] = []
+        emit_step(agent_key, 0, "completed")
         return {"agent_spec": agent_spec}
 
     name = str(agent_spec.get("name") or "").strip()
@@ -130,4 +139,5 @@ async def select_tools_node(state: SystemState) -> dict[str, Any]:
         logger.exception("select_tools_node failed")
 
     agent_spec["selected_tools"] = selected
+    emit_step(agent_key, 0, "completed")
     return {"agent_spec": agent_spec}
