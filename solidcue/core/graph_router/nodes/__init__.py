@@ -1,6 +1,7 @@
 """Router graph node implementations."""
 
 from solidcue.core.graph_router.nodes.build_plan_node import build_plan_node
+from solidcue.core.graph_router.nodes.create_agent_build_node import create_agent_build_node
 from solidcue.core.graph_router.nodes.execute_plan_node import execute_plan_node
 from solidcue.core.graph_router.nodes.final_output_node import final_output_node
 from solidcue.core.graph_router.nodes.handoff_node import handoff_node
@@ -10,6 +11,7 @@ from solidcue.core.graph_router.nodes.reshape_node import reshape_node
 
 __all__ = [
     "build_plan_node",
+    "create_agent_build_node",
     "execute_plan_node",
     "final_output_node",
     "handoff_node",

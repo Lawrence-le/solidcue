@@ -116,6 +116,21 @@ def build_system_subgraph() -> Any:
     return _assemble_graph().compile()
 
 
+def build_collect_subgraph() -> Any:
+    """Compiled collect-only subgraph: just ``collect_spec``.
+
+    The router embeds this for the interrupt-driven spec gathering, then runs the
+    build as a *top-level* router node (create_agent_build) so its progress events
+    stream to the client (nested-subgraph custom events are filtered out). Bare
+    compile so the collect interrupt propagates to the parent run.
+    """
+    graph = StateGraph(SystemState, output_schema=SystemSubgraphOutput)
+    graph.add_node("collect_spec", collect_spec_node)
+    graph.set_entry_point("collect_spec")
+    graph.add_edge("collect_spec", END)
+    return graph.compile()
+
+
 def build_system_graph() -> Any:
     """Compile the system graph with an in-memory checkpointer.
 

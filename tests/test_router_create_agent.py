@@ -123,6 +123,45 @@ async def test_router_create_agent_completes_when_ready(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_router_create_agent_streams_build_progress(tmp_path, monkeypatch):
+    """The build runs as a top-level router node, so its plan/subagent progress
+    events surface on the top-level custom stream (subgraphs off) — the same
+    stream the client reads. This is what renders the dispatch panel."""
+    _wire_stubs(tmp_path, monkeypatch, agent_key="weather_assistant")
+    monkeypatch.setattr(
+        intent_router_module,
+        "resolve_router_provider",
+        lambda _thread_id: _ReadyRouterProvider(),
+    )
+    cs_mod = importlib.import_module("solidcue.core.graph_system.nodes.collect_spec_node")
+    monkeypatch.setattr(
+        cs_mod,
+        "_workspace_provider_defaults",
+        lambda: {
+            "decision_provider_type": "anthropic", "decision_base_url": None,
+            "decision_api_key": "sk-ws", "decision_model": "m", "decision_temperature": 0.2,
+            "lite_provider_type": "anthropic", "lite_base_url": None,
+            "lite_api_key": "sk-ws", "lite_model": "m", "lite_temperature": 0.2,
+            "reviewer_provider_type": "anthropic", "reviewer_base_url": None,
+            "reviewer_api_key": "sk-ws", "reviewer_model": "m", "reviewer_temperature": 0.2,
+            "selected_tools": [],
+        },
+    )
+
+    graph = _build_router_graph()
+    events = []
+    async for chunk in graph.astream(
+        {"thread_id": "r-stream", "user_input": "provide current weather", "metadata": {}},
+        config={"configurable": {"thread_id": "r-stream"}},
+        stream_mode="custom",  # NOT subgraphs=True — mirrors the client
+    ):
+        events.append(chunk.get("event"))
+
+    assert "plan" in events
+    assert events.count("subagent") >= 4  # one running + completed per build step
+
+
+@pytest.mark.asyncio
 async def test_router_create_agent_answers_conversationally(monkeypatch):
     _stub_router_provider(monkeypatch)
 

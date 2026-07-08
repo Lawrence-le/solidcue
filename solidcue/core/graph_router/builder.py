@@ -7,6 +7,7 @@ from langgraph.graph import END, StateGraph
 
 from solidcue.core.graph_router.nodes import (
     build_plan_node,
+    create_agent_build_node,
     execute_plan_node,
     final_output_node,
     handoff_node,
@@ -30,16 +31,17 @@ def _resolve_recursion_limit() -> int:
 
 def _route_after_intent_router(
     state: RouterState,
-) -> Literal["create_agent_system", "build_plan", "reshape", "final_output"]:
+) -> Literal["create_agent_collect", "build_plan", "reshape", "final_output"]:
     # Routing is purely on the classified intent — the intent router no longer builds
     # the plan; that is build_plan_node's job (reached only for the task intent).
     intent = state.get("router_intent")
     if intent == "create_agent":
         # Keep conversing (final_output) until a ready spec (name + purpose) exists;
-        # once agent_spec is set, delegate to the system subgraph to build the agent.
+        # once agent_spec is set, run the collect subgraph (gathers/validates + may
+        # interrupt), then the top-level build node.
         spec = state.get("agent_spec")
         if isinstance(spec, dict) and spec.get("agent_key") and spec.get("name"):
-            return "create_agent_system"
+            return "create_agent_collect"
         return "final_output"
     if intent == "reshape":
         # Re-present retained data without re-dispatching, from agent_results[].data.
@@ -47,6 +49,14 @@ def _route_after_intent_router(
     if intent == "task":
         # Write the execution plan in a dedicated node, then execute it.
         return "build_plan"
+    return "final_output"
+
+
+def _route_after_collect(state: RouterState) -> Literal["create_agent_build", "final_output"]:
+    # collect_spec sets created_agent_key on a valid spec; otherwise it interrupted
+    # (already surfaced) or set an error. Only proceed to the build when ready.
+    if state.get("created_agent_key"):
+        return "create_agent_build"
     return "final_output"
 
 
@@ -60,7 +70,7 @@ def _route_after_build_plan(
 
 
 def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
-    from solidcue.core.graph_system.builder import build_system_subgraph
+    from solidcue.core.graph_system.builder import build_collect_subgraph
 
     graph = StateGraph(RouterState)
 
@@ -70,9 +80,10 @@ def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
     graph.add_node("execute_plan", execute_plan_node)
     graph.add_node("reshape", reshape_node)
     graph.add_node("handoff", handoff_node)
-    # System graph embedded as a subgraph node: runs the create_agent flow and
-    # surfaces its form interrupt through this graph's run.
-    graph.add_node("create_agent_system", build_system_subgraph())
+    # create_agent runs in two parts: collect (embedded subgraph, may interrupt for
+    # the spec form) then build (top-level node, so its progress events stream).
+    graph.add_node("create_agent_collect", build_collect_subgraph())
+    graph.add_node("create_agent_build", create_agent_build_node)
     graph.add_node("final_output", final_output_node)
 
     graph.set_entry_point("initialize")
@@ -80,10 +91,11 @@ def _compile_graph(checkpointer: Any, *, session_id: str | None = None) -> Any:
     graph.add_edge("initialize", "intent_router")
     graph.add_conditional_edges("intent_router", _route_after_intent_router)
     graph.add_conditional_edges("build_plan", _route_after_build_plan)
+    graph.add_conditional_edges("create_agent_collect", _route_after_collect)
     graph.add_edge("execute_plan", "final_output")
     graph.add_edge("reshape", "final_output")
     graph.add_edge("handoff", "final_output")
-    graph.add_edge("create_agent_system", "final_output")
+    graph.add_edge("create_agent_build", "final_output")
     graph.add_edge("final_output", END)
 
     compiled = graph.compile(checkpointer=checkpointer)
