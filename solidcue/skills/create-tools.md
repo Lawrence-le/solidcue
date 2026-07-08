@@ -25,7 +25,8 @@ Every generated agent tools file must contain these sections in order:
 1. `# Tools`
 2. `Tool Routing`
 3. `Failure Handling`
-4. `Tool Notes`
+4. `Artifact Output`
+5. `Tool Notes`
 
 ## Rules
 
@@ -34,6 +35,10 @@ Every generated agent tools file must contain these sections in order:
 - Do not invent tools that are not registered in the agent YAML.
 - Keep wording specific to the target agent's tool list, but preserve the structure.
 - If a section is not relevant, state `Not specified` rather than omitting it.
+- For `Artifact Output`: if the spec's `produces_artifacts` is true, state that the
+  agent saves its output and record the destination from `artifact_destination`
+  **verbatim** — the exact path and/or filename the human provided. If false, state
+  that the agent does not produce saved artifacts.
 
 ## Workflow
 

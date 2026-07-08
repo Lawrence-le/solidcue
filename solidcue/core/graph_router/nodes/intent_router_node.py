@@ -146,11 +146,21 @@ async def intent_router_node(
             agent_key = normalize_text(raw_spec.get("agent_key"))
             description = normalize_text(raw_spec.get("description"))
             if name and agent_key and description:
-                result["agent_spec"] = {
+                spec = {
                     "name": name,
                     "agent_key": agent_key,
                     "description": description,
                 }
+                # Carry through any other contract fields the router gathered
+                # (tools, planning, artifact behavior, key tasks, …) instead of
+                # dropping them — collect_spec then only asks for what's missing.
+                from solidcue.services.agent_service import CreateAgentInput
+
+                allowed = set(CreateAgentInput.model_fields)
+                for key, value in raw_spec.items():
+                    if key in allowed and key not in spec and value is not None:
+                        spec[key] = value
+                result["agent_spec"] = spec
                 result["system_intent"] = "create_agent"
 
     return result

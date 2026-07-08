@@ -45,6 +45,10 @@ _VALID_SPEC: dict[str, Any] = {
     "reviewer_model": "claude-haiku-4-5-20251001",
     "reviewer_temperature": 0.2,
     "selected_tools": [],
+    # Definition substance now part of a "complete" spec — an explicit artifacts
+    # answer + at least one key task, so collect_spec proceeds without interrupt.
+    "produces_artifacts": False,
+    "key_tasks": ["answer the test query"],
 }
 
 _FAKE_CONFIG = AgentConfig(
@@ -434,6 +438,10 @@ async def test_collect_spec_interrupts_on_missing_fields(tmp_path, monkeypatch):
     assert "decision" in schema["provider_roles"]
     assert "api_key" in schema["secret_fields"]
     assert "anthropic" in schema["provider_types"]
+    # Definition substance is elicited too: the artifacts question + key tasks.
+    assert "produces_artifacts" in payload["gather_fields"]
+    assert "key_tasks" in payload["gather_fields"]
+    assert "produces_artifacts" in schema["definition"]
     # No agent was created while paused.
     assert not result.get("created_agent_key")
 
@@ -457,7 +465,17 @@ def test_collect_spec_inherits_workspace_provider(monkeypatch):
     )
 
     result = cs_mod.collect_spec_node(
-        {"agent_spec": {"name": "Weather", "agent_key": "weather_assistant", "description": "Checks weather"}}
+        {
+            "agent_spec": {
+                "name": "Weather",
+                "agent_key": "weather_assistant",
+                "description": "Checks weather",
+                # Definition substance supplied so only provider inheritance is
+                # under test here (not the new elicitation gate).
+                "produces_artifacts": False,
+                "key_tasks": ["report the forecast"],
+            }
+        }
     )
 
     assert result.get("system_next") != "final_output"
@@ -499,11 +517,15 @@ async def test_collect_spec_resume_completes_creation(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_collect_spec_resume_still_incomplete_errors(tmp_path, monkeypatch):
-    """Resuming with a still-incomplete spec routes to final_output with an error."""
+async def test_collect_spec_resume_still_incomplete_reasks(tmp_path, monkeypatch):
+    """Resuming with a still-incomplete spec re-asks (interrupts again) instead of
+    erroring — the gate loops until the spec is structurally valid."""
     from langgraph.types import Command
 
     _wire_stubs(tmp_path, monkeypatch)
+    # No workspace provider → the reply must supply providers; keep it incomplete.
+    cs_mod = importlib.import_module("solidcue.core.graph_system.nodes.collect_spec_node")
+    monkeypatch.setattr(cs_mod, "_workspace_provider_defaults", lambda: None)
     graph = _build_async_graph()
     cfg = {"configurable": {"thread_id": "int-3"}}
 
@@ -516,12 +538,13 @@ async def test_collect_spec_resume_still_incomplete_errors(tmp_path, monkeypatch
         },
         config=cfg,
     )
-    # Reply still omits a required field (description).
+    # Reply still omits required fields (description, providers) → gate re-asks.
     result = await graph.ainvoke(
         Command(resume={"agent_spec": {"name": "X", "agent_key": "x_agent"}}),
         config=cfg,
     )
 
-    assert "__interrupt__" not in result
+    assert "__interrupt__" in result
+    assert result["__interrupt__"][0].value["type"] == "collect_agent_spec"
+    assert "description" in result["__interrupt__"][0].value["invalid_fields"]
     assert not result.get("created_agent_key")
-    assert "required fields missing" in result["final_response"]

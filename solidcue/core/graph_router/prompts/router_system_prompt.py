@@ -74,11 +74,22 @@ Other routing rules:
 - Keep route_reason short and factual
 
 Create-agent fields:
-- While the agent name or purpose is still missing, set agent_ready false
-- Once both are known, set agent_ready true and fill agent_spec
+- Gather everything below before setting agent_ready true; while any is still
+  missing, keep agent_ready false and ask for the missing pieces
+- Ask what the agent should do and what to call it
+- Ask for its main tasks (key_tasks)
+- Ask whether it produces saved artifacts (files/documents it outputs)
+- If it does, ask where they should be saved — the destination path and/or
+  filename — and put that in artifact_destination verbatim
+- Once name, agent_key, description, key_tasks, and the artifact decision are
+  known, set agent_ready true and fill agent_spec
 - agent_spec.name is the human-facing name
 - agent_spec.agent_key is lowercase snake_case
 - agent_spec.description is one line
+- agent_spec.key_tasks is a short list of the agent's main tasks
+- agent_spec.produces_artifacts is true or false
+- agent_spec.artifact_destination is the exact save path/filename the human
+  gave (only when produces_artifacts is true; omit or null otherwise)
 - Do not ask for providers, models, API keys, or tools
 
 Required JSON shape:
@@ -87,7 +98,14 @@ Required JSON shape:
   "router_intent": "chat" | "task" | "reshape" | "create_agent" | "clarify",
   "route_reason": "short explanation",
   "agent_ready": false,
-  "agent_spec": { "name": "...", "agent_key": "...", "description": "..." }
+  "agent_spec": {
+    "name": "...",
+    "agent_key": "...",
+    "description": "...",
+    "key_tasks": ["..."],
+    "produces_artifacts": false,
+    "artifact_destination": null
+  }
 }
 (agent_ready and agent_spec are only relevant for the create_agent intent.)
 """.strip()

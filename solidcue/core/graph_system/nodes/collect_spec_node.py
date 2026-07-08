@@ -42,6 +42,28 @@ def _validate_spec(agent_spec: dict[str, Any]) -> list[str]:
     return []
 
 
+def _elicitation_gaps(agent_spec: dict[str, Any]) -> list[str]:
+    """Fields that are optional on ``CreateAgentInput`` (so CLI/REST still work)
+    but that the interactive gate must still gather from the human.
+
+    Pydantic validation alone never surfaces these — they have defaults, so they
+    pass as "present" and would silently land in the YAML/MD unasked. This is the
+    substance the definition writer needs (does the agent produce artifacts, where
+    do they go, what are its key tasks). Returned as extra fields to ask for,
+    alongside the structural ``invalid_fields``.
+    """
+    gaps: list[str] = []
+    if agent_spec.get("produces_artifacts") is None:
+        gaps.append("produces_artifacts")
+    elif agent_spec.get("produces_artifacts") and not str(
+        agent_spec.get("artifact_destination") or ""
+    ).strip():
+        gaps.append("artifact_destination")
+    if not agent_spec.get("key_tasks"):
+        gaps.append("key_tasks")
+    return gaps
+
+
 def _available_tool_keys() -> list[str]:
     try:
         from solidcue.tools.loader import list_tools
@@ -105,6 +127,11 @@ def _form_schema() -> dict[str, Any]:
     interrupt payload alone — including which fields are secret (password inputs)."""
     return {
         "basic": ["name", "agent_key", "description", "selected_tools"],
+        # Definition (.md) substance — the writer's inputs. `definition` fields are
+        # gathered every interactive create; `advanced` fields are optional YAML
+        # overrides the frontend may render behind a disclosure.
+        "definition": ["produces_artifacts", "artifact_destination", "key_tasks", "examples"],
+        "advanced": ["allowed_tasks", "style", "constraints", "validation_policy"],
         "provider_roles": list(_PROVIDER_ROLES),
         "provider_fields": list(_PROVIDER_FIELDS),
         "secret_fields": list(_SECRET_FIELDS),
@@ -124,18 +151,28 @@ def collect_spec_node(state: SystemState) -> dict[str, Any]:
     as ``{"agent_spec": {...}}``.
 
     Option B (pre-supplied): a complete spec (e.g. from ``POST /agents``) never
-    interrupts. If the spec is still invalid after the user's reply, route to
-    ``final_output`` with an error.
+    interrupts and proceeds straight to creation.
+
+    The gate re-asks until the spec is structurally valid — a single incomplete
+    reply no longer errors out, it just prompts again. Elicitation gaps (the
+    definition/MD substance) are surfaced on the first ask but never block, since
+    the human may knowingly leave them empty.
     """
     agent_spec = _apply_provider_defaults(dict(state.get("agent_spec") or {}))
 
     invalid = _validate_spec(agent_spec)
-    if invalid:
+    gaps = _elicitation_gaps(agent_spec)
+    asked = False
+    # Loop while structurally invalid, or on the very first pass if there are only
+    # elicitation gaps to gather. After the first ask, gaps stop driving the loop
+    # (they don't block), so only missing required fields keep it open.
+    while invalid or (gaps and not asked):
         reply = interrupt(
             {
                 "type": "collect_agent_spec",
                 "agent_spec": agent_spec,
                 "invalid_fields": invalid,
+                "gather_fields": gaps,
                 "form_schema": _form_schema(),
                 "message": "Fill in the agent details and provider settings.",
             }
@@ -145,19 +182,9 @@ def collect_spec_node(state: SystemState) -> dict[str, Any]:
             provided = reply["agent_spec"]
         if isinstance(provided, dict):
             agent_spec.update(provided)
+        asked = True
         invalid = _validate_spec(agent_spec)
-
-    if invalid:
-        msg = (
-            "Cannot create agent — required fields missing or invalid: "
-            + ", ".join(invalid)
-            + "."
-        )
-        return {
-            "system_next": "final_output",
-            "final_response": msg,
-            "assistant_draft": msg,
-        }
+        gaps = _elicitation_gaps(agent_spec)
 
     return {
         "agent_spec": agent_spec,

@@ -54,7 +54,8 @@ _READY_JSON = (
     '"plan":[],"handoff":{},"target_artifacts_source":[],'
     '"agent_ready":true,'
     '"agent_spec":{"name":"Weather Assistant","agent_key":"weather_assistant",'
-    '"description":"Provides current weather and forecasts","selected_tools":[]}}'
+    '"description":"Provides current weather and forecasts","selected_tools":[],'
+    '"produces_artifacts":false,"key_tasks":["report current conditions and forecast"]}}'
 )
 
 
