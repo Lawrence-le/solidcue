@@ -71,11 +71,14 @@ async def _run_one(
 
 async def generate_definitions_node(state: SystemState) -> dict[str, Any]:
     """Generate all three definition files under one create-agent span."""
+    from solidcue.core.graph_system.nodes._progress import emit_step
+
     agent_key = str(
         state.get("created_agent_key") or state.get("agent_spec", {}).get("agent_key", "")
     ).strip()
     agent_spec = state.get("agent_spec") or {}
     config = _parent_config()
+    emit_step(agent_key, 1, "running")
 
     artifacts: list[dict[str, Any]] = []
     # One span wraps all three generations → a single cohesive create-agent trace.
@@ -92,4 +95,5 @@ async def generate_definitions_node(state: SystemState) -> dict[str, Any]:
                 content, path = "", ""
             artifacts.append({"target": target, "path": path, "content": content})
 
+    emit_step(agent_key, 1, "completed")
     return {"artifacts": artifacts}

@@ -17,11 +17,16 @@ def _scrub_secrets(agent_spec: dict[str, Any]) -> dict[str, Any]:
 
 def write_config_node(state: SystemState) -> dict[str, Any]:
     """Build AgentConfig and write <agent_key>.yaml from agent_spec. MD files already written."""
+    from solidcue.core.graph_system.nodes._progress import emit_step
+
     agent_spec = state.get("agent_spec") or {}
+    agent_key = str(state.get("created_agent_key") or agent_spec.get("agent_key") or "")
+    emit_step(agent_key, 2, "running")
 
     try:
         input_data = CreateAgentInput(**agent_spec)
         config, path = write_agent_config(input_data)
+        emit_step(config.agent_key, 2, "completed")
         return {
             "created_agent_key": config.agent_key,
             "created_config_path": path,
@@ -29,6 +34,7 @@ def write_config_node(state: SystemState) -> dict[str, Any]:
         }
     except Exception:
         logger.exception("write_config_node failed for agent_spec=%r", agent_spec)
+        emit_step(agent_key, 2, "failed")
         msg = "Failed to write agent config — check that agent_spec has all required provider fields."
         return {
             "system_next": "final_output",
