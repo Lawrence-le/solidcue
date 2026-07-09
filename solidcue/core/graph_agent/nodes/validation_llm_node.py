@@ -60,8 +60,13 @@ CONTROL_TOKEN_FRAGMENTS = (
     "commentary<|channel|>",
     "analysis<|message|>",
 )
-_VALIDATION_EVIDENCE_MAX_CHARS = 12000
-_VALIDATION_ENTRY_MAX_CHARS = 3000
+# Synthesis feeds its writer the full, untruncated evidence. Validation must see the
+# same evidence to fairly grounding-check the draft — a validator that sees less than
+# the writer produces false "unsupported claim" failures. These caps are high safety
+# ceilings to avoid a pathological (very large) page blowing the context, not routine
+# trims: normal per-page evidence stays well under them.
+_VALIDATION_EVIDENCE_MAX_CHARS = 60000
+_VALIDATION_ENTRY_MAX_CHARS = 40000
 _TEXT_FIELD_CANDIDATES = ("content", "text", "body", "markdown")
 
 def _fail(
@@ -158,6 +163,13 @@ def _handoff_for_item(handoff: dict[str, Any], item_key: str | None) -> dict[str
 
 
 def _extract_text_from_value(value: Any) -> str:
+    """Render a handoff value as validation evidence text.
+
+    Mirrors synthesis's stringifier: prefer a plain-text field, otherwise
+    serialize the WHOLE value so structured payloads (e.g. search results with
+    snippets) are surfaced — not reduced to just the first field (which dropped
+    the results and kept only the query). Truncation is applied by the caller.
+    """
     if isinstance(value, str):
         return value.strip()
     if isinstance(value, dict):
@@ -165,15 +177,15 @@ def _extract_text_from_value(value: Any) -> str:
             candidate = value.get(key)
             if isinstance(candidate, str) and candidate.strip():
                 return candidate.strip()
-        for nested in value.values():
-            text = _extract_text_from_value(nested)
-            if text:
-                return text
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
     if isinstance(value, list):
-        for item in value:
-            text = _extract_text_from_value(item)
-            if text:
-                return text
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
     return ""
 
 
@@ -193,6 +205,8 @@ def _build_validation_evidence_from_handoff(state: AgentState) -> list[dict[str,
             continue
         if "base64" in source_key.casefold():
             continue
+        if source_key.casefold() == "synthesis_draft":
+            continue  # already passed separately as draft_output — don't duplicate it as evidence
 
         text = _extract_text_from_value(value)
         if not text:

@@ -180,3 +180,30 @@ async def test_llm_validation_uses_handoff_scoped_evidence(monkeypatch) -> None:
 
     assert result["failure_type"] is None
     assert len(captured["validation_evidence"]) >= 2
+
+
+def test_validation_evidence_keeps_results_and_drops_draft() -> None:
+    """Validation evidence must include full search results (not just the query)
+    and must not duplicate the synthesis draft (already passed as draft_output)."""
+    state = {
+        "handoff": {
+            "search_results_retrieved::item_1": {
+                "query": "2026 world cup dates",
+                "results": [
+                    {"title": "Yahoo", "snippet": "runs from June 11 - July 19", "url": "http://y"},
+                ],
+            },
+            "synthesis_draft::item_1": {"content": "# Draft says June 11 - July 19"},
+        },
+        "task_plan": [{"id": "task_6", "context": {"item_key": "item_1"}}],
+        "current_task": "task_6",
+    }
+    evidence = validation_module._build_validation_evidence_from_handoff(state)
+    keys = [e["source_key"] for e in evidence]
+
+    # draft dropped (no longer duplicated as evidence)
+    assert "synthesis_draft" not in keys
+    # search results kept in full — the fact-bearing snippet survives, not just the query
+    sr = next(e for e in evidence if e["source_key"] == "search_results_retrieved")
+    assert "June 11 - July 19" in sr["content"]
+    assert "Yahoo" in sr["content"]
