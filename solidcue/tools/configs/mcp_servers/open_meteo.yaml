@@ -1,5 +1,6 @@
 server_key: open_meteo
 name: Open Meteo
+purpose: Retrieve weather forecast data for a location.
 description: 'Open Meteo MCP server exposing 1 tool(s): get_weather_forecast'
 transport: streamable_http
 url: http://localhost:9001/mcp

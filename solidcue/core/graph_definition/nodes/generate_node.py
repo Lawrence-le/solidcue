@@ -6,8 +6,51 @@ from typing import Any
 
 from solidcue.core.graph_definition.state.schema import DefinitionState
 from solidcue.core.utils.metrics import timed_async_stream_generate
+from solidcue.tools import playbook_registry
 
 logger = logging.getLogger(__name__)
+
+
+async def _tool_playbook_grounding(agent_spec: dict[str, Any]) -> str:
+    """Collect the server playbooks for this agent's tools, as TOOLS.md grounding.
+
+    Returns an instruction block carrying the authoritative tool-sequencing guidance,
+    or "" when the agent has no tools / no server exposes a playbook / servers are
+    unreachable. Best-effort: never raises into generation.
+    """
+    tools = agent_spec.get("selected_tools") or agent_spec.get("tools") or []
+    tool_keys = [str(t).strip() for t in tools if str(t).strip()]
+    if not tool_keys:
+        return ""
+
+    try:
+        await playbook_registry.ensure_playbooks_warmed()
+    except Exception:
+        logger.warning("generate_node: playbook warm failed; proceeding without grounding")
+        return ""
+
+    seen: set[str] = set()
+    blocks: list[str] = []
+    for key in tool_keys:
+        text = playbook_registry.get_playbook_for_tool(key)
+        if text and text not in seen:
+            seen.add(text)
+            blocks.append(text)
+
+    if not blocks:
+        return ""
+
+    joined = "\n\n".join(blocks)
+    return (
+        "=== TOOL PLAYBOOK (authoritative tool sequencing) ===\n"
+        "The following playbook(s) describe how this agent's tools must be sequenced — "
+        "data-dependencies (which call's result feeds the next), ordering, formats, and "
+        "preconditions. Treat it as the source of truth for tool mechanics. In the TOOLS.md "
+        "you write, follow these sequences exactly; keep the file focused on THIS agent's "
+        "tools, paths, and workflow, and rely on the playbook for the mechanics rather than "
+        "re-deriving them.\n\n"
+        f"{joined}"
+    )
 
 
 def _strip_code_fence(text: str) -> str:
@@ -41,6 +84,15 @@ async def generate_node(state: DefinitionState) -> dict[str, Any]:
     agent_spec = state.get("agent_spec") or {}
 
     spec_text = json.dumps(agent_spec, indent=2)
+    user_content = f"Create the {target} definition file for this agent:\n\n{spec_text}"
+
+    # Ground the TOOLS.md target in the servers' tool playbooks so the writer follows
+    # real tool sequences instead of improvising them. Other targets are untouched.
+    if target == "tools":
+        grounding = await _tool_playbook_grounding(agent_spec)
+        if grounding:
+            user_content = f"{user_content}\n\n{grounding}"
+
     messages = [
         {
             "role": "system",
@@ -52,9 +104,7 @@ async def generate_node(state: DefinitionState) -> dict[str, Any]:
         },
         {
             "role": "user",
-            "content": (
-                f"Create the {target} definition file for this agent:\n\n{spec_text}"
-            ),
+            "content": user_content,
         },
     ]
 

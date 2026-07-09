@@ -1,6 +1,8 @@
 tool_key: create_pdf_document
 name: Create PDF Document
-description: Generate a PDF document from text content and a title.
+description: Generate a PDF file from text and a title, returning a downloadable file.
+  Does NOT save to Google Drive. To store the result in Drive, upload the file bytes
+  with drive_upload_file.
 type: mcp
 enabled: true
 approval_mode: always

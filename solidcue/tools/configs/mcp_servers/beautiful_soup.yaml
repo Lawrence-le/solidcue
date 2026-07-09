@@ -1,5 +1,6 @@
 server_key: beautiful_soup
 name: beautiful soup
+purpose: Fetch and extract readable text/content from a specific web page URL (HTML scraping).
 description: 'beautiful soup MCP server exposing 1 tool(s): scrape_webpage'
 transport: streamable_http
 url: http://localhost:9002/mcp

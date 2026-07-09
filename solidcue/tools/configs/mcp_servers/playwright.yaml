@@ -1,5 +1,6 @@
 server_key: playwright
 name: playwright
+purpose: Drive a real browser to navigate, click, type, and read live/JavaScript-rendered pages when static scraping is insufficient.
 description: 'playwright MCP server exposing 7 tool(s): browser_navigate, browser_click,
   browser_type, browser_get_text, browser_screenshot, browser_status, browser_close'
 transport: streamable_http

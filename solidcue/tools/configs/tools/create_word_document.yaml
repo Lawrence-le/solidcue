@@ -1,6 +1,8 @@
 tool_key: create_word_document
 name: Create Word Document
-description: Generate a Word document from text content and a title.
+description: Generate a Word (.docx) file from text and a title, returning a downloadable
+  file. Does NOT save to Google Drive. To store the result in Drive, use
+  create_formatted_word_document_base64 and upload the payload with drive_upload_file.
 type: mcp
 enabled: true
 approval_mode: always

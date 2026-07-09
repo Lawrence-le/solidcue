@@ -36,6 +36,7 @@ class MCPServerConfig(BaseModel):
     server_key: str
     name: str
     description: str = ""
+    purpose: str = ""  # one-line capability blurb for goal→server selection
     transport: Literal["streamable_http"] = "streamable_http"
     url: str
     auth: MCPAuthConfig = Field(default_factory=MCPAuthConfig)

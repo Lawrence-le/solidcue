@@ -77,6 +77,55 @@ class MCPClient:
 
         return [self._tool_to_dict(tool) for tool in result.tools]
 
+    async def list_resources(self) -> list[dict[str, Any]]:
+        """
+        Discover resources (readable documents) exposed by the MCP server.
+
+        Returns dictionaries with uri/name/mime_type/description.
+        """
+        try:
+            async with streamable_http_client(self.server.url) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.list_resources()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Unable to reach MCP server '{self.server.server_key}' at {self.server.url}: {exc}"
+            ) from exc
+
+        return [
+            {
+                "uri": str(getattr(res, "uri", "")),
+                "name": getattr(res, "name", None),
+                "mime_type": getattr(res, "mimeType", None)
+                or getattr(res, "mime_type", None),
+                "description": getattr(res, "description", None),
+            }
+            for res in result.resources
+        ]
+
+    async def read_resource(self, uri: str) -> str:
+        """
+        Read a resource's text content by uri. Concatenates text parts; non-text
+        parts are ignored (playbooks and other guidance are text/markdown).
+        """
+        try:
+            async with streamable_http_client(self.server.url) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.read_resource(uri)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Unable to reach MCP server '{self.server.server_key}' at {self.server.url}: {exc}"
+            ) from exc
+
+        parts: list[str] = []
+        for item in getattr(result, "contents", []) or []:
+            text_value = getattr(item, "text", None)
+            if isinstance(text_value, str):
+                parts.append(text_value)
+        return "\n".join(parts)
+
     async def call_tool(
         self,
         tool_name: str,

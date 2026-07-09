@@ -1,5 +1,6 @@
 server_key: serper
 name: serper
+purpose: Search the web for text results and images on a topic, returning source URLs and snippets.
 description: 'serper MCP server exposing 2 tool(s): search_web, search_web_images'
 transport: streamable_http
 url: http://localhost:9004/mcp

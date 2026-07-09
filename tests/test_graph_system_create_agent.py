@@ -64,29 +64,68 @@ _FAKE_CONFIG = AgentConfig(
 # ---------------------------------------------------------------------------
 
 
+def _stub_catalog(st_mod, monkeypatch):
+    """Two servers; keep playbook warm/read inert (no network)."""
+    servers = [
+        {"server_key": "open_meteo", "name": "Open Meteo", "purpose": "weather",
+         "tools": [{"tool_key": "get_weather_forecast", "description": "w"}]},
+        {"server_key": "serper", "name": "serper", "purpose": "search",
+         "tools": [{"tool_key": "search_web", "description": "s"}]},
+    ]
+    monkeypatch.setattr(st_mod, "_server_catalog", lambda: (servers, []))
+
+    async def _warm():
+        return None
+
+    monkeypatch.setattr(st_mod.playbook_registry, "ensure_playbooks_warmed", _warm)
+    monkeypatch.setattr(st_mod.playbook_registry, "get_server_playbook", lambda k: None)
+
+
 @pytest.mark.asyncio
-async def test_select_tools_keeps_valid_drops_invalid(monkeypatch):
+async def test_select_tools_two_stage_keeps_valid_drops_invalid(monkeypatch):
     st_mod = importlib.import_module("solidcue.core.graph_system.nodes.select_tools_node")
 
     async def _stream(messages, **_):
-        yield '{"selected_tools": ["get_weather_forecast", "made_up_tool"]}'
+        # Stage A asks for {"servers": ...}; stage B for {"selected_tools": ...}.
+        user = messages[-1]["content"]
+        if '"servers"' in user:
+            yield '{"servers": ["open_meteo"]}'
+        else:
+            yield '{"selected_tools": ["get_weather_forecast", "made_up_tool"]}'
 
     fake = MagicMock()
     fake.async_stream_generate = _stream
     monkeypatch.setattr(st_mod, "_get_workspace_provider", lambda: fake)
-    monkeypatch.setattr(
-        st_mod,
-        "_available_tools",
-        lambda: [
-            {"tool_key": "get_weather_forecast", "description": "w"},
-            {"tool_key": "search_web", "description": "s"},
-        ],
-    )
+    _stub_catalog(st_mod, monkeypatch)
 
     result = await st_mod.select_tools_node(
         {"agent_spec": {"name": "Weather", "agent_key": "wx", "description": "weather"}}
     )
-    # Valid pick kept; invented one dropped.
+    # Server-scoped candidate = open_meteo tools only; invented tool dropped.
+    assert result["agent_spec"]["selected_tools"] == ["get_weather_forecast"]
+
+
+@pytest.mark.asyncio
+async def test_select_tools_scopes_to_picked_server(monkeypatch):
+    """A tool from an unpicked server can't be selected even if the model names it."""
+    st_mod = importlib.import_module("solidcue.core.graph_system.nodes.select_tools_node")
+
+    async def _stream(messages, **_):
+        user = messages[-1]["content"]
+        if '"servers"' in user:
+            yield '{"servers": ["open_meteo"]}'
+        else:
+            # search_web belongs to serper, which was NOT picked → must be dropped.
+            yield '{"selected_tools": ["get_weather_forecast", "search_web"]}'
+
+    fake = MagicMock()
+    fake.async_stream_generate = _stream
+    monkeypatch.setattr(st_mod, "_get_workspace_provider", lambda: fake)
+    _stub_catalog(st_mod, monkeypatch)
+
+    result = await st_mod.select_tools_node(
+        {"agent_spec": {"name": "Weather", "agent_key": "wx", "description": "weather"}}
+    )
     assert result["agent_spec"]["selected_tools"] == ["get_weather_forecast"]
 
 
@@ -94,8 +133,9 @@ async def test_select_tools_keeps_valid_drops_invalid(monkeypatch):
 async def test_select_tools_respects_preselected(monkeypatch):
     st_mod = importlib.import_module("solidcue.core.graph_system.nodes.select_tools_node")
     monkeypatch.setattr(
-        st_mod, "_available_tools",
-        lambda: [{"tool_key": "search_web", "description": "s"}],
+        st_mod, "_server_catalog",
+        lambda: ([{"server_key": "serper", "name": "serper", "purpose": "search",
+                   "tools": [{"tool_key": "search_web", "description": "s"}]}], []),
     )
     # Provider must not be called when tools are already chosen.
     def _boom():
@@ -281,7 +321,7 @@ def _wire_stubs(tmp_path: Path, monkeypatch, agent_key: str = "test_agent") -> d
 
     # select_tools_node: no registry tools in tests → it short-circuits to [].
     st_mod = importlib.import_module("solidcue.core.graph_system.nodes.select_tools_node")
-    monkeypatch.setattr(st_mod, "_available_tools", lambda: [])
+    monkeypatch.setattr(st_mod, "_server_catalog", lambda: ([], []))
 
     async def _stream(messages, **_):
         target = "content"

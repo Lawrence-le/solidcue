@@ -135,6 +135,63 @@ def test_strip_code_fence_unit():
 
 
 @pytest.mark.asyncio
+async def test_tools_target_injects_playbook(monkeypatch):
+    """For the tools target, the servers' playbooks are injected into the prompt."""
+    captured: dict = {}
+
+    async def _fake_generate(provider, messages, **_):
+        captured["messages"] = messages
+        return "# TOOLS", None
+
+    async def _warm():
+        return None
+
+    monkeypatch.setattr(generate_module, "_get_workspace_provider", lambda: MagicMock())
+    monkeypatch.setattr(generate_module, "timed_async_stream_generate", _fake_generate)
+    monkeypatch.setattr(generate_module.playbook_registry, "ensure_playbooks_warmed", _warm)
+    monkeypatch.setattr(
+        generate_module.playbook_registry,
+        "get_playbook_for_tool",
+        lambda k: "PLAYBOOK-BODY" if k == "drive_upload_file" else None,
+    )
+
+    await generate_module.generate_node({
+        "definition_target": "tools",
+        "contract_skill": "# Contract",
+        "agent_spec": {"agent_key": "a", "selected_tools": ["drive_upload_file", "search_web"]},
+    })
+
+    user_msg = captured["messages"][1]["content"]
+    assert "TOOL PLAYBOOK" in user_msg
+    assert "PLAYBOOK-BODY" in user_msg
+
+
+@pytest.mark.asyncio
+async def test_non_tools_target_skips_playbook(monkeypatch):
+    """Persona/skill generation must not consult the playbook registry."""
+    captured: dict = {}
+
+    async def _fake_generate(provider, messages, **_):
+        captured["messages"] = messages
+        return "# PERSONA", None
+
+    def _boom(_key):
+        raise AssertionError("playbook must not be consulted for non-tools target")
+
+    monkeypatch.setattr(generate_module, "_get_workspace_provider", lambda: MagicMock())
+    monkeypatch.setattr(generate_module, "timed_async_stream_generate", _fake_generate)
+    monkeypatch.setattr(generate_module.playbook_registry, "get_playbook_for_tool", _boom)
+
+    await generate_module.generate_node({
+        "definition_target": "persona",
+        "contract_skill": "# Contract",
+        "agent_spec": {"agent_key": "a", "selected_tools": ["drive_upload_file"]},
+    })
+
+    assert "TOOL PLAYBOOK" not in captured["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
 async def test_generate_node_no_provider_returns_empty(monkeypatch):
     monkeypatch.setattr(generate_module, "_get_workspace_provider", lambda: None)
 

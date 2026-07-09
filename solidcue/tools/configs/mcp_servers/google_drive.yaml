@@ -1,5 +1,6 @@
 server_key: google_drive
 name: google drive
+purpose: Store, read, organize, and share files and spreadsheets in the user's Google Drive (upload/download files, resolve folders, read/write Sheets, create Docs).
 description: 'google drive MCP server exposing 11 tool(s): google_auth_status, google_auth_clear,
   drive_search_files, drive_list_by_path, drive_get_file_metadata, drive_download_file,
   drive_upload_file, docs_create_document, docs_append_text, sheets_create_spreadsheet,
