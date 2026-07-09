@@ -1,6 +1,6 @@
 server_key: beautiful_soup
 name: beautiful soup
-purpose: Fetch and extract readable text/content from a specific web page URL (HTML scraping).
+purpose: (DISABLED) Static HTML scraping — superseded by the Playwright browser server, which renders JavaScript and extracts page content reliably.
 description: 'beautiful soup MCP server exposing 1 tool(s): scrape_webpage'
 transport: streamable_http
 url: http://localhost:9002/mcp
@@ -13,4 +13,4 @@ auth:
   param_name: api_key
   oauth_provider: null
   scopes: []
-enabled: true
+enabled: false

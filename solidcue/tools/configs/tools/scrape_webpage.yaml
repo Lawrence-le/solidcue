@@ -1,10 +1,11 @@
 tool_key: scrape_webpage
 name: Scrape Webpage
 description: Scrape a known webpage URL via the BeautifulSoup backend and return static
-  parsed content. Some JavaScript-rendered pages may only return titles, headings,
-  or links.
+  parsed content. DISABLED — returns empty/partial content on JavaScript-rendered pages
+  and extracts poorly even on some static pages. Use the Playwright browser tools
+  (browser_navigate + browser_get_text) for web content extraction instead.
 type: mcp
-enabled: true
+enabled: false
 mcp:
   server_key: beautiful_soup
   tool_name: scrape_webpage
