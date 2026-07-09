@@ -73,6 +73,38 @@ def _server_catalog() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     return list(servers.values()), non_mcp
 
 
+def _goal_text(agent_spec: dict[str, Any]) -> str:
+    """Full goal for tool selection: description + key tasks + artifact destination.
+
+    The bare `description` often omits the output/save requirement (e.g. "save to
+    Google Drive"), which is exactly what determines whether a save/upload chain is
+    needed. Fold in `key_tasks` and `artifact_destination` so selection sees the
+    whole job, not just the summary line.
+    """
+    parts: list[str] = []
+    description = str(agent_spec.get("description") or "").strip()
+    if description:
+        parts.append(description)
+
+    tasks = agent_spec.get("key_tasks")
+    if isinstance(tasks, (list, tuple)):
+        joined = "; ".join(str(t).strip() for t in tasks if str(t).strip())
+    else:
+        joined = str(tasks or "").strip()
+    if joined:
+        parts.append(f"Key tasks: {joined}")
+
+    if agent_spec.get("produces_artifacts"):
+        dest = str(agent_spec.get("artifact_destination") or "").strip()
+        parts.append(
+            f"Produces a saved output artifact. Destination: {dest}"
+            if dest
+            else "Produces a saved output artifact."
+        )
+
+    return "\n".join(parts)
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     raw = (text or "").strip()
     if not raw:
@@ -120,7 +152,7 @@ async def _pick_servers(
             "role": "user",
             "content": (
                 f"Agent name: {name}\n"
-                f"Agent purpose: {description}\n\n"
+                f"Agent goal:\n{description}\n\n"
                 f"Available servers:\n{catalog}\n\n"
                 'Return JSON only: {"servers": ["server_key", ...]}.'
             ),
@@ -170,7 +202,7 @@ async def _pick_tools(
             "role": "user",
             "content": (
                 f"Agent name: {name}\n"
-                f"Agent purpose: {description}\n\n"
+                f"Agent goal:\n{description}\n\n"
                 f"Available tools:\n{tool_lines}"
                 f"{playbook_block}\n\n"
                 'Return JSON only: {"selected_tools": ["tool_key", ...]}. Use [] if none apply.'
@@ -217,7 +249,7 @@ async def select_tools_node(state: SystemState) -> dict[str, Any]:
         return {"agent_spec": agent_spec}
 
     name = str(agent_spec.get("name") or "").strip()
-    description = str(agent_spec.get("description") or "").strip()
+    description = _goal_text(agent_spec) or str(agent_spec.get("description") or "").strip()
 
     # Stage A: pick servers.
     picked_servers = await _pick_servers(provider, name, description, servers) if servers else []

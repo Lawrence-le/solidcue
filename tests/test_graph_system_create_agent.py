@@ -129,6 +129,26 @@ async def test_select_tools_scopes_to_picked_server(monkeypatch):
     assert result["agent_spec"]["selected_tools"] == ["get_weather_forecast"]
 
 
+def test_goal_text_folds_in_tasks_and_artifact():
+    st_mod = importlib.import_module("solidcue.core.graph_system.nodes.select_tools_node")
+    goal = st_mod._goal_text({
+        "description": "gathers info on a topic",
+        "key_tasks": ["search web", "write summary"],
+        "produces_artifacts": True,
+        "artifact_destination": "Google Drive, folder info_gather, {topic}-summary.docx",
+    })
+    assert "gathers info on a topic" in goal
+    assert "search web" in goal and "write summary" in goal
+    # The save requirement — the thing that needs the Drive chain — must be present.
+    assert "Google Drive" in goal and "info_gather" in goal
+
+
+def test_goal_text_without_artifact_is_just_description():
+    st_mod = importlib.import_module("solidcue.core.graph_system.nodes.select_tools_node")
+    goal = st_mod._goal_text({"description": "answer weather questions", "produces_artifacts": False})
+    assert goal == "answer weather questions"
+
+
 @pytest.mark.asyncio
 async def test_select_tools_respects_preselected(monkeypatch):
     st_mod = importlib.import_module("solidcue.core.graph_system.nodes.select_tools_node")
